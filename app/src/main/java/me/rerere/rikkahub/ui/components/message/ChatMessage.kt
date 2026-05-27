@@ -97,16 +97,7 @@ import me.rerere.rikkahub.utils.base64Encode
 import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 import kotlin.time.Duration.Companion.milliseconds
-import java.io.File
-import java.io.FileOutputStream
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import me.rerere.hugeicons.stroke.Download04
 
 @Composable
 fun ChatMessage(
@@ -357,6 +348,7 @@ private fun MessagePartsBlock(
                                     ChatMessageToolStep(
                                         tool = step.tool,
                                         loading = loading && !step.tool.isExecuted,
+                                        allParts = parts,
                                         onToolApproval = onToolApproval,
                                         onToolAnswer = onToolAnswer,
                                     )
@@ -370,17 +362,9 @@ private fun MessagePartsBlock(
             is MessagePartBlock.ContentBlock -> key(block.index) {
                 when (val part = block.part) {
                     is UIMessagePart.Text -> {
-                        // 检测代码块
-                        val codeBlocks = remember(part.text) { extractCodeBlocks(part.text) }
-                        val hasMultipleCodeBlocks = codeBlocks.size >= 2
-                        
-                        // ZIP下载启动器
-                        val createZipLauncher = rememberLauncherForActivityResult(
-                            ActivityResultContracts.CreateDocument("application/zip")
-                        ) { uri ->
-                            uri?.let {
-                                exportCodeBlocksToZip(context, it, codeBlocks)
-                            }
+                        // 从显示文本中移除[zip:...]标记
+                        val displayText = remember(part.text) {
+                            part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
                         }
                         
                         SelectionContainer {
@@ -394,7 +378,7 @@ private fun MessagePartsBlock(
                                     ) {
                                         Column(modifier = Modifier.padding(8.dp)) {
                                             MarkdownBlock(
-                                                content = part.text.replaceRegexes(
+                                                content = displayText.replaceRegexes(
                                                     assistant = assistant,
                                                     scope = AssistantAffectScope.USER,
                                                     visual = true,
@@ -412,7 +396,7 @@ private fun MessagePartsBlock(
                                         ) {
                                             Column(modifier = Modifier.padding(8.dp)) {
                                                 MarkdownBlock(
-                                                    content = part.text.replaceRegexes(
+                                                    content = displayText.replaceRegexes(
                                                         assistant = assistant,
                                                         scope = AssistantAffectScope.ASSISTANT,
                                                         visual = true,
@@ -423,7 +407,7 @@ private fun MessagePartsBlock(
                                         }
                                     } else {
                                         MarkdownBlock(
-                                            content = part.text.replaceRegexes(
+                                            content = displayText.replaceRegexes(
                                                 assistant = assistant,
                                                 scope = AssistantAffectScope.ASSISTANT,
                                                 visual = true,
@@ -435,26 +419,6 @@ private fun MessagePartsBlock(
                                     }
                                 }
                                 
-                                // 多代码块下载按钮
-                                if (hasMultipleCodeBlocks) {
-                                    TextButton(
-                                        onClick = {
-                                            val zipFileName = generateZipFileName(part.text)
-                                            createZipLauncher.launch(zipFileName)
-                                        },
-                                        modifier = Modifier.padding(top = 8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = HugeIcons.Download04,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Text(
-                                            text = "下载 ${codeBlocks.size} 个文件",
-                                            modifier = Modifier.padding(start = 8.dp)
-                                        )
-                                    }
-                                }
                             }
                         }
                     }
@@ -665,93 +629,3 @@ private fun MessagePartsBlock(
     }
 }
 
-// 代码块数据类
-private data class CodeBlockInfo(
-    val language: String,
-    val code: String,
-    val fileName: String
-)
-
-// 从Markdown文本中提取代码块
-private fun extractCodeBlocks(text: String): List<CodeBlockInfo> {
-    val codeBlocks = mutableListOf<CodeBlockInfo>()
-    // 匹配 ```language\ncode``` 格式的代码块
-    val regex = Regex("```([\\w.+-]*)\\n?([\\s\\S]*?)```", RegexOption.DOT_MATCHES_ALL)
-    
-    regex.findAll(text).forEach { match ->
-        val language = match.groupValues[1].trim().lowercase()
-        val code = match.groupValues[2].trim()
-        
-        // 确定文件名
-        val fileName = if (language.contains(".")) {
-            // 如果language包含.，说明是文件名（如 manifest.json）
-            language
-        } else {
-            // 否则根据语言生成文件名
-            val extension = when (language) {
-                "kotlin" -> "kt"
-                "java" -> "java"
-                "python" -> "py"
-                "javascript" -> "js"
-                "typescript" -> "ts"
-                "cpp", "c++" -> "cpp"
-                "c" -> "c"
-                "html" -> "html"
-                "css" -> "css"
-                "xml" -> "xml"
-                "json" -> "json"
-                "yaml", "yml" -> "yml"
-                "markdown", "md" -> "md"
-                "sql" -> "sql"
-                "sh", "bash" -> "sh"
-                "svg" -> "svg"
-                "rust" -> "rs"
-                "go" -> "go"
-                "php" -> "php"
-                "ruby" -> "rb"
-                "swift" -> "swift"
-                else -> "txt"
-            }
-            "file_${codeBlocks.size + 1}.$extension"
-        }
-        
-        codeBlocks.add(CodeBlockInfo(language, code, fileName))
-    }
-    
-    return codeBlocks
-}
-
-// 生成ZIP文件名
-private fun generateZipFileName(text: String): String {
-    // 尝试从消息中提取zip文件名（如 "这是 project.zip"）
-    val zipNameRegex = Regex("(\\S+\\.zip)", RegexOption.IGNORE_CASE)
-    val match = zipNameRegex.find(text)
-    
-    return if (match != null) {
-        match.groupValues[1]
-    } else {
-        // 默认使用时间和代码块数量
-        val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        "files_$timestamp.zip"
-    }
-}
-
-// 导出代码块到ZIP文件
-private fun exportCodeBlocksToZip(context: android.content.Context, uri: android.net.Uri, codeBlocks: List<CodeBlockInfo>) {
-    try {
-        context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-            ZipOutputStream(outputStream).use { zipOut ->
-                codeBlocks.forEachIndexed { index, block ->
-                    val entryName = block.fileName
-                    val zipEntry = ZipEntry(entryName)
-                    zipOut.putNextEntry(zipEntry)
-                    zipOut.write(block.code.toByteArray(Charsets.UTF_8))
-                    zipOut.closeEntry()
-                }
-            }
-        }
-        android.widget.Toast.makeText(context, "ZIP文件已保存", android.widget.Toast.LENGTH_SHORT).show()
-    } catch (e: Exception) {
-        android.widget.Toast.makeText(context, "保存失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
-    }
-}

@@ -1,15 +1,22 @@
 package me.rerere.rikkahub.ui.components.message
 
+import android.util.Log
+import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -48,7 +55,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -75,8 +84,10 @@ import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.hugeicons.stroke.Time02
+import me.rerere.hugeicons.stroke.FileDownload
 import me.rerere.hugeicons.stroke.Tools
 import me.rerere.hugeicons.stroke.VolumeHigh
+import me.rerere.hugeicons.stroke.Zip02
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
@@ -105,6 +116,8 @@ private object ToolNames {
     const val TTS = "text_to_speech"
     const val ASK_USER = "ask_user"
     const val USE_SKILL = "use_skill"
+    const val WRITE_FILES = "write_files"
+    const val ZIP_FILES = "zip_files"  // backward compat
 }
 
 private object MemoryActions {
@@ -132,6 +145,7 @@ private fun getToolIcon(toolName: String, action: String?) = when (toolName) {
     ToolNames.TTS -> HugeIcons.VolumeHigh
     ToolNames.ASK_USER -> HugeIcons.BubbleChatQuestion
     ToolNames.USE_SKILL -> HugeIcons.MagicWand01
+    ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> HugeIcons.Zip02
     else -> HugeIcons.Tools
 }
 
@@ -142,6 +156,7 @@ private fun JsonElement?.getStringContent(key: String): String? =
 fun ChainOfThoughtScope.ChatMessageToolStep(
     tool: UIMessagePart.Tool,
     loading: Boolean = false,
+    allParts: List<UIMessagePart> = emptyList(),
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
 ) {
@@ -205,6 +220,12 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             if (path != null) "Skill: $skillName / $path" else "Skill: $skillName"
         }
 
+        ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> {
+            val zipName = arguments.getStringContent("zip_name") ?: ""
+            val fileCount = arguments.jsonObject.get("files")?.jsonArray?.size ?: 0
+            if (zipName.isNotBlank()) "📦 $zipName" else "💾 ${fileCount} files"
+        }
+
         else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
     }
 
@@ -218,6 +239,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
 
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         ToolNames.TTS -> arguments.getStringContent("text") != null
+        ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> tool.isExecuted && content != null
         else -> false
     } || isDenied || images.isNotEmpty()
 
@@ -360,6 +382,77 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                     imageVector = HugeIcons.Refresh01,
                                     contentDescription = "Replay",
                                     modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                    }
+                    if ((tool.toolName == ToolNames.ZIP_FILES || tool.toolName == ToolNames.WRITE_FILES) && tool.isExecuted && content != null) {
+                        val context = LocalContext.current
+                        val zipName = content.getStringContent("zip_name") ?: "files.zip"
+                        val totalFiles = content.jsonObject.get("total_files")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                            ?: content.jsonObject.get("files")?.jsonArray?.size ?: 0
+
+                        // Extract file contents from tool arguments
+                        val fileContents = remember(arguments) {
+                            arguments.jsonObject.get("files")?.jsonArray?.mapNotNull { fileElement ->
+                                runCatching {
+                                    val obj = fileElement.jsonObject
+                                    val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                                    val content = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                                    name to content
+                                }.getOrNull()
+                            } ?: emptyList()
+                        }
+
+                        val scope = rememberCoroutineScope()
+                        val createZipLauncher = rememberLauncherForActivityResult(
+                            ActivityResultContracts.CreateDocument("application/zip")
+                        ) { uri ->
+                            uri?.let { destination ->
+                                scope.launch(Dispatchers.IO) {
+                                    runCatching {
+                                        context.contentResolver.openOutputStream(destination)?.use { stream ->
+                                            val zipOut = java.util.zip.ZipOutputStream(stream)
+                                            fileContents.forEach { (name, content) ->
+                                                zipOut.putNextEntry(java.util.zip.ZipEntry(name))
+                                                zipOut.write(content.toByteArray(Charsets.UTF_8))
+                                                zipOut.closeEntry()
+                                            }
+                                            zipOut.finish()
+                                        }
+                                    }.onFailure {
+                                        withContext(Dispatchers.Main) {
+                                            android.widget.Toast.makeText(context, "Export failed: ${it.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "$totalFiles files",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            FilledTonalButton(
+                                onClick = { createZipLauncher.launch(zipName) },
+                                enabled = fileContents.isNotEmpty(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.FileDownload,
+                                    contentDescription = "Download ZIP",
+                                    modifier = Modifier.size(14.dp),
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Download",
+                                    style = MaterialTheme.typography.labelSmall,
                                 )
                             }
                         }

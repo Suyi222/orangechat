@@ -106,7 +106,7 @@ fun HighlightCodeBlock(
     val navController = LocalNavController.current
     val context = LocalContext.current
     val settings = LocalSettings.current
-    val normalizedLanguage = remember(language) { language.lowercase() }
+    val normalizedLanguage = remember(language) { resolveHighlightLanguage(language) }
     val canInlinePreview = completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES
     var previewMode by remember(canInlinePreview, code, normalizedLanguage) {
         mutableStateOf(canInlinePreview)
@@ -192,7 +192,7 @@ fun HighlightCodeBlock(
                         showLineNumbers && autoWrap -> {
                             CodeBlockWithLineNumbersWrapped(
                                 displayLines = displayLines,
-                                language = language,
+                                language = normalizedLanguage,
                                 textStyle = textStyle,
                                 colorPalette = colorPalette,
                             )
@@ -201,7 +201,7 @@ fun HighlightCodeBlock(
                             CodeBlockDefault(
                                 displayCode = displayCode,
                                 displayLines = displayLines,
-                                language = language,
+                                language = normalizedLanguage,
                                 textStyle = textStyle,
                                 colorPalette = colorPalette,
                                 autoWrap = autoWrap,
@@ -391,9 +391,11 @@ private fun HighlightCodeActions(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
                     .onClick {
-                        val fileName = if (language.contains(".")) {
-                            language
+                        val fileName = if (language.contains(".") || language.contains("/")) {
+                            // 语言标签是文件名或路径（如 MainActivity.kt, src/main.py）
+                            language.substringAfterLast("/")
                         } else {
+                            // 纯语言名，根据语言生成文件名
                             val extension = when (language.lowercase()) {
                                 "kotlin" -> "kt"
                                 "java" -> "java"
@@ -411,6 +413,20 @@ private fun HighlightCodeActions(
                                 "sql" -> "sql"
                                 "sh", "bash" -> "sh"
                                 "svg" -> "svg"
+                                "rust" -> "rs"
+                                "go" -> "go"
+                                "php" -> "php"
+                                "ruby" -> "rb"
+                                "swift" -> "swift"
+                                "vue" -> "vue"
+                                "csharp", "cs" -> "cs"
+                                "dart" -> "dart"
+                                "lua" -> "lua"
+                                "perl" -> "pl"
+                                "r" -> "r"
+                                "scala" -> "scala"
+                                "jsx" -> "jsx"
+                                "tsx" -> "tsx"
                                 else -> "txt"
                             }
                             "code_${
@@ -438,7 +454,7 @@ private fun HighlightCodeActions(
                     .size(iconSize)
             )
 
-            val normalizedLanguage = language.lowercase()
+            val resolvedLanguage = resolveHighlightLanguage(language)
             if (canInlinePreview) {
                 Icon(
                     imageVector = if (previewMode) HugeIcons.Code else HugeIcons.View,
@@ -454,7 +470,7 @@ private fun HighlightCodeActions(
                 )
             }
 
-            if (completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES) {
+            if (completeCodeBlock && resolvedLanguage in PREVIEWABLE_LANGUAGES) {
                 Icon(
                     imageVector = HugeIcons.Eye,
                     contentDescription = stringResource(id = R.string.code_block_preview),
@@ -462,7 +478,7 @@ private fun HighlightCodeActions(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
                         .onClick {
-                            val content = buildCodePreviewHtml(code = code, language = normalizedLanguage)
+                            val content = buildCodePreviewHtml(code = code, language = resolvedLanguage)
                             navController.navigate(Screen.WebView(content = content.base64Encode()))
                         }
                         .padding(4.dp)
@@ -500,6 +516,62 @@ private fun buildCodePreviewHtml(code: String, language: String): String {
         """<!DOCTYPE html><html><body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;">$code</body></html>"""
     } else {
         code
+    }
+}
+
+// 从语言标签解析用于语法高亮的语言标识
+// 支持文件名格式（如 MainActivity.kt, src/main.py, manifest.json）
+private fun resolveHighlightLanguage(languageTag: String): String {
+    // 如果包含路径分隔符，取最后一段作为文件名
+    val fileName = languageTag.substringAfterLast("/")
+    val extension = fileName.substringAfterLast(".", "").lowercase()
+
+    // 如果标签本身就是语言名（没有扩展名），直接返回小写形式
+    if (extension.isEmpty() || fileName == languageTag) {
+        return languageTag.lowercase()
+    }
+
+    // 从扩展名映射到语言标识
+    return when (extension) {
+        "kt", "kts" -> "kotlin"
+        "java" -> "java"
+        "py" -> "python"
+        "js", "mjs" -> "javascript"
+        "ts" -> "typescript"
+        "jsx" -> "jsx"
+        "tsx" -> "tsx"
+        "cpp", "cc", "cxx" -> "cpp"
+        "c" -> "c"
+        "html" -> "html"
+        "css" -> "css"
+        "xml" -> "xml"
+        "json" -> "json"
+        "yaml", "yml" -> "yaml"
+        "md" -> "markdown"
+        "sql" -> "sql"
+        "sh" -> "bash"
+        "svg" -> "svg"
+        "rs" -> "rust"
+        "go" -> "go"
+        "php" -> "php"
+        "rb" -> "ruby"
+        "swift" -> "swift"
+        "vue" -> "vue"
+        "toml" -> "toml"
+        "ini" -> "ini"
+        "cs" -> "csharp"
+        "dart" -> "dart"
+        "lua" -> "lua"
+        "pl" -> "perl"
+        "scala" -> "scala"
+        "gradle" -> "gradle"
+        else -> {
+            when (fileName.lowercase()) {
+                "dockerfile" -> "dockerfile"
+                "makefile" -> "makefile"
+                else -> extension.ifBlank { languageTag.lowercase() }
+            }
+        }
     }
 }
 

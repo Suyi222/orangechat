@@ -37,6 +37,7 @@ import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -108,6 +109,8 @@ class GenerationHandler(
                         }
                     ).let(this::addAll)
                 }
+                // 文件写入工具 - AI可直接将文件内容写入设备或打包ZIP
+                add(buildWriteFilesTool())
                 addAll(tools)
             }
 
@@ -548,21 +551,20 @@ class GenerationHandler(
  * 构建代码块提示 - 告知AI代码文件命名和ZIP打包功能
  */
 private fun buildCodeBlockPrompt(): String = buildString {
-    appendLine("## Code Block Features")
+    appendLine("## Code Block Rules (MUST FOLLOW)")
     appendLine()
-    appendLine("When providing code, you can use the following features:")
+    appendLine("1. **ALWAYS name code blocks with filenames**: You MUST use the actual filename as the code block language tag instead of just the language name. This is critical for proper file saving and syntax highlighting. Examples:")
+    appendLine("   - ✅ Correct: ```MainActivity.kt instead of ```kotlin")
+    appendLine("   - ✅ Correct: ```index.html instead of ```html")
+    appendLine("   - ✅ Correct: ```styles.css instead of ```css")
+    appendLine("   - ✅ Correct: ```package.json instead of ```json")
+    appendLine("   - ✅ Correct: ```manifest.xml instead of ```xml")
+    appendLine("   - ✅ Correct: ```main.py instead of ```python")
+    appendLine("   - ✅ Correct: ```App.vue instead of ```vue")
+    appendLine("   - ❌ Wrong: ```kotlin, ```python, ```javascript (these don't provide filenames)")
+    appendLine("   - For code without a specific filename, use a descriptive name like ```example.ts, ```helper.py")
     appendLine()
-    appendLine("1. **Named Code Files**: Include the filename in the code block language tag, e.g.:")
-    appendLine("   ```manifest.json")
-    appendLine("   { \"name\": \"example\" }")
-    appendLine("   ```")
-    appendLine("   ```src/main.kt")
-    appendLine("   fun main() { println(\"Hello\") }")
-    appendLine("   ```")
-    appendLine()
-    appendLine("2. **Multi-file ZIP Download**: When you provide 2+ code blocks in a single response, they will be automatically packaged into a ZIP file for download.")
-    appendLine()
-    appendLine("3. **Custom ZIP Filename**: You can specify the ZIP filename by mentioning it in your message, e.g.:")
-    appendLine("   \"Here is the project code in project.zip\"")
-    appendLine("   \"Download the files as my-app.zip\"")
+    appendLine("2. **ZIP Download**: Users can download code files as a ZIP ONLY when you call the `write_files` tool. Pass each file's name and content directly in the tool parameters.")
+    appendLine("   - Example: `write_files` with `{\"zip_name\":\"my-project.zip\",\"files\":[{\"name\":\"MainActivity.kt\",\"content\":\"...\"},{\"name\":\"index.html\",\"content\":\"...\"}]}`")
+    appendLine("   - Always use actual filenames (e.g. `MainActivity.kt`) as code block language tags, not just language names (e.g. `kotlin`).")
 }
