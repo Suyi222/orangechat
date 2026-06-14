@@ -77,7 +77,7 @@ class McpManager(
         install(SSE)
     }
 
-    private val clients: MutableMap<McpServerConfig, Client> = mutableMapOf()
+    private val clients: MutableMap<Uuid, Pair<McpServerConfig, Client>> = mutableMapOf()
     private val reconnectJobs: MutableMap<Uuid, Job> = mutableMapOf()
     private val reconnectAttempts: MutableMap<Uuid, Int> = mutableMapOf()
     val syncingStatus = MutableStateFlow<Map<Uuid, McpStatus>>(mapOf())
@@ -90,10 +90,14 @@ class McpManager(
                     runCatching {
                         Log.i(TAG, "update configs: $mcpServerConfigs")
                         val newConfigs = mcpServerConfigs.filter { it.commonOptions.enable }
-                        val currentConfigs = clients.keys.toList()
+                        val currentConfigs = clients.values.map { it.first }.toList()
                         val (toAdd, toRemove) = currentConfigs.checkDifferent(
                             other = newConfigs,
-                            eq = { a, b -> a.id == b.id }
+                            eq = { a, b ->
+                                a.id == b.id &&
+                                a.getUrl() == b.getUrl() &&
+                                a.commonOptions.headers == b.commonOptions.headers
+                            }
                         )
                         Log.i(TAG, "to_add: $toAdd")
                         Log.i(TAG, "to_remove: $toRemove")
@@ -114,7 +118,7 @@ class McpManager(
     }
 
     fun getClient(config: McpServerConfig): Client? {
-        return clients.entries.find { it.key.id == config.id }?.value
+        return clients[config.id]?.second
     }
 
     fun getAllAvailableTools(): List<Pair<Uuid, McpTool>> {
@@ -132,10 +136,10 @@ class McpManager(
     }
 
     suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
-        val entry = clients.entries.find { it.key.id == serverId }
-        val client = entry?.value
+        val pair = clients[serverId]
+        val client = pair?.second
             ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
-        val config = entry.key
+        val config = pair.first
         Log.i(TAG, "callTool: $toolName / $args (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
@@ -201,6 +205,11 @@ class McpManager(
         }
     }
 
+    private fun McpServerConfig.getUrl(): String = when (this) {
+        is McpServerConfig.SseTransportServer -> url
+        is McpServerConfig.StreamableHTTPServer -> url
+    }
+
     suspend fun addClient(config: McpServerConfig) = withContext(Dispatchers.IO) {
         removeClient(config) // Remove first
         cancelReconnect(config.id)
@@ -233,7 +242,7 @@ class McpManager(
             }
         }
 
-        clients[config] = client
+        clients[config.id] = Pair(config, client)
         runCatching {
             setStatus(config = config, status = McpStatus.Connecting)
             client.connect(transport)
@@ -248,7 +257,7 @@ class McpManager(
     }
 
     private suspend fun sync(config: McpServerConfig) {
-        val client = clients[config] ?: return
+        val client = clients[config.id]?.second ?: return
 
         setStatus(config = config, status = McpStatus.Connecting)
 
@@ -258,53 +267,50 @@ class McpManager(
         }
         val serverTools = client.listTools()?.tools ?: emptyList()
         Log.i(TAG, "sync: tools: $serverTools")
+
+        // 在 lambda 外构建新的 tools 列表
+        val common = config.commonOptions
+        val tools = common.tools.toMutableList()
+
+        // 基于server对比
+        serverTools.forEach { serverTool ->
+            val tool = tools.find { it.name == serverTool.name }
+            if (tool == null) {
+                tools.add(
+                    McpTool(
+                        name = serverTool.name,
+                        description = serverTool.description,
+                        enable = true,
+                        inputSchema = serverTool.inputSchema.toSchema()
+                    )
+                )
+            } else {
+                val index = tools.indexOf(tool)
+                tools[index] = tool.copy(
+                    description = serverTool.description,
+                    inputSchema = serverTool.inputSchema.toSchema()
+                )
+            }
+        }
+
+        // 删除不在server内的
+        tools.removeIf { tool -> serverTools.none { it.name == tool.name } }
+
+        // 构造更新后的 config
+        val updatedConfig = config.clone(
+            commonOptions = common.copy(
+                tools = tools
+            )
+        )
+
+        // 单次原子覆盖写，消除 remove+put 的空档期
+        clients[config.id] = Pair(updatedConfig, client)
+
+        // 纯数据持久化：只把匹配 id 的 serverConfig 换成 updatedConfig
         settingsStore.update { old ->
             old.copy(
                 mcpServers = old.mcpServers.map { serverConfig ->
-                    if (serverConfig.id != config.id) return@map serverConfig
-                    val common = serverConfig.commonOptions
-                    val tools = common.tools.toMutableList()
-
-                    // 基于server对比
-                    serverTools.forEach { serverTool ->
-                        val tool = tools.find { it.name == serverTool.name }
-                        if (tool == null) {
-                            tools.add(
-                                McpTool(
-                                    name = serverTool.name,
-                                    description = serverTool.description,
-                                    enable = true,
-                                    inputSchema = serverTool.inputSchema.toSchema()
-                                )
-                            )
-                        } else {
-                            val index = tools.indexOf(tool)
-                            tools[index] = tool.copy(
-                                description = serverTool.description,
-                                inputSchema = serverTool.inputSchema.toSchema()
-                            )
-                        }
-                    }
-
-                    // 删除不在server内的
-                    tools.removeIf { tool -> serverTools.none { it.name == tool.name } }
-
-                    // 更新clients
-                    clients.remove(config)
-                    clients.put(
-                        config.clone(
-                            commonOptions = common.copy(
-                                tools = tools
-                            )
-                        ), client
-                    )
-
-                    // 返回新的serverConfig，更新到settings store
-                    serverConfig.clone(
-                        commonOptions = common.copy(
-                            tools = tools
-                        )
-                    )
+                    if (serverConfig.id == config.id) updatedConfig else serverConfig
                 }
             )
         }
@@ -313,7 +319,7 @@ class McpManager(
     }
 
     suspend fun syncAll() = withContext(Dispatchers.IO) {
-        clients.keys.toList().forEach { config ->
+        clients.values.map { it.first }.toList().forEach { config ->
             runCatching {
                 sync(config)
             }.onFailure {
@@ -324,16 +330,15 @@ class McpManager(
 
     suspend fun removeClient(config: McpServerConfig) = withContext(Dispatchers.IO) {
         cancelReconnect(config.id)
-        val toRemove = clients.entries.filter { it.key.id == config.id }
-        toRemove.forEach { entry ->
+        val entry = clients.remove(config.id)
+        if (entry != null) {
             runCatching {
-                entry.value.close()
+                entry.second.close()
             }.onFailure {
                 it.printStackTrace()
             }
-            clients.remove(entry.key)
-            syncingStatus.emit(syncingStatus.value.toMutableMap().apply { remove(entry.key.id) })
-            Log.i(TAG, "removeClient: ${entry.key} / ${entry.key.commonOptions.name}")
+            syncingStatus.emit(syncingStatus.value.toMutableMap().apply { remove(config.id) })
+            Log.i(TAG, "removeClient: ${entry.first} / ${entry.first.commonOptions.name}")
         }
         reconnectAttempts.remove(config.id)
     }
@@ -399,10 +404,10 @@ class McpManager(
 
     private suspend fun reconnectClient(config: McpServerConfig) = withContext(Dispatchers.IO) {
         // 先关闭旧客户端
-        val oldEntry = clients.entries.find { it.key.id == config.id }
+        val oldEntry = clients[config.id]
         if (oldEntry != null) {
-            runCatching { oldEntry.value.close() }.onFailure { it.printStackTrace() }
-            clients.remove(oldEntry.key)
+            runCatching { oldEntry.second.close() }.onFailure { it.printStackTrace() }
+            clients.remove(config.id)
         }
 
         val transport = getTransport(config)
@@ -430,7 +435,7 @@ class McpManager(
             }
         }
 
-        clients[config] = client
+        clients[config.id] = Pair(config, client)
         setStatus(config, McpStatus.Connecting)
         client.connect(transport)
         sync(config)
