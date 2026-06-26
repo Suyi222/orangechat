@@ -200,6 +200,7 @@ class MusicPlayerService : Service() {
                                 }
                             }
                             if (shouldNotify) {
+                                stopForeground(STOP_FOREGROUND_REMOVE)
                                 LocalBroadcastManager.getInstance(this@MusicPlayerService)
                                     .sendBroadcast(Intent(ACTION_MUSIC_COMPLETED))
                             }
