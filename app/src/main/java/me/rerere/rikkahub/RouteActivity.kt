@@ -131,6 +131,7 @@ import me.rerere.rikkahub.ui.pages.webview.WebViewPage
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import me.rerere.rikkahub.ui.theme.RikkahubTheme
 import me.rerere.rikkahub.utils.CrashHandler
+import me.rerere.rikkahub.service.KeepAliveService
 import okhttp3.OkHttpClient
 import org.koin.android.ext.android.inject
 import org.koin.compose.koinInject
@@ -170,6 +171,16 @@ class RouteActivity : ComponentActivity() {
             finish()
             return
         }
+
+        // 根据设置自动启动保活服务
+        try {
+            if (settingsStore.settingsFlow.value.keepAliveEnabled) {
+                KeepAliveService.start(this)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "自动启动保活服务失败", e)
+        }
+
         setContent {
             RikkahubTheme {
                 setSingletonImageLoaderFactory { context ->

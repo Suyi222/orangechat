@@ -3,10 +3,12 @@
 /local.properties
 /.idea
 .DS_Store
-/build
 /captures
 .externalNativeBuild
 .cxx
+
+# 构建产物（所有模块）
+**/build/
 local.properties
 .cursor
 .history

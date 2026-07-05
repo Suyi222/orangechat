@@ -1,8 +1,0 @@
-me.rerere.workspace-pngs-0 D:\a5\orangechat\workspace\build\generated\res\pngs\debug
-me.rerere.workspace-updated_navigation_xml-1 D:\a5\orangechat\workspace\build\generated\updated_navigation_xml\debug
-me.rerere.workspace-mergeDebugResources-2 D:\a5\orangechat\workspace\build\intermediates\incremental\debug\mergeDebugResources\merged.dir
-me.rerere.workspace-mergeDebugResources-3 D:\a5\orangechat\workspace\build\intermediates\incremental\debug\mergeDebugResources\stripped.dir
-me.rerere.workspace-debug-4 D:\a5\orangechat\workspace\build\intermediates\merged_res\debug\mergeDebugResources
-me.rerere.workspace-debug-5 D:\a5\orangechat\workspace\build\intermediates\packaged_res\debug\packageDebugResources
-me.rerere.workspace-debug-6 D:\a5\orangechat\workspace\src\debug\res
-me.rerere.workspace-main-7 D:\a5\orangechat\workspace\src\main\res

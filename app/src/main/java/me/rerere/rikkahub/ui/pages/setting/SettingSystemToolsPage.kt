@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
@@ -40,7 +41,10 @@ import me.rerere.hugeicons.stroke.BatteryFull
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.MusicNote02
 import me.rerere.hugeicons.stroke.Watch01
+import me.rerere.hugeicons.stroke.Pulse01
 import me.rerere.rikkahub.data.ai.tools.SystemTools
+import me.rerere.rikkahub.service.KeepAliveService
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
 import me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -89,6 +93,14 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
         } else emptySet<PermissionInfo>()
     )
 
+    // 保活开关状态
+    var keepAliveEnabled by remember(settings) {
+        mutableStateOf(settings.keepAliveEnabled)
+    }
+    LaunchedEffect(settings) {
+        keepAliveEnabled = settings.keepAliveEnabled
+    }
+
     val cameraPermissionState = rememberPermissionState(permissions = setOf(PermissionCamera))
 
     val smsPermissionState = rememberPermissionState(permissions = setOf(PermissionReadSms))
@@ -110,6 +122,54 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
             contentPadding = contentPadding + PaddingValues(8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 后台保活
+            item {
+                CardGroup(
+                    title = { Text("后台保活") },
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    item(
+                        leadingContent = { Icon(imageVector = HugeIcons.Pulse01, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.setting_system_tools_keep_alive)) },
+                        supportingContent = { Text(stringResource(R.string.setting_system_tools_keep_alive_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = keepAliveEnabled,
+                                onCheckedChange = { enabled ->
+                                    keepAliveEnabled = enabled
+                                    vm.updateSettings(settings.copy(keepAliveEnabled = enabled))
+                                    if (enabled) {
+                                        // Android 13+ 需要先请求 POST_NOTIFICATIONS 权限
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                                            && !notificationPermissionState.allPermissionsGranted
+                                        ) {
+                                            notificationPermissionState.requestPermissions()
+                                        } else {
+                                            KeepAliveService.start(context)
+                                        }
+                                    } else {
+                                        KeepAliveService.stop(context)
+                                    }
+                                }
+                            )
+                        }
+                    )
+                    if (keepAliveEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && !notificationPermissionState.allPermissionsGranted
+                    ) {
+                        item(
+                            headlineContent = { Text("⚠ 通知权限未授予") },
+                            supportingContent = { Text("开启保活需要通知权限以显示常驻通知") },
+                            trailingContent = {
+                                FilledTonalButton(onClick = { notificationPermissionState.requestPermissions() }) {
+                                    Text("授权")
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
             // 位置服务
             item {
                 CardGroup(

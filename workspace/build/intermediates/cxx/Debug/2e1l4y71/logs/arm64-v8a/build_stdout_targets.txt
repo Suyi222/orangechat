@@ -1,2 +1,0 @@
-ninja: Entering directory `D:\a5\orangechat\workspace\.cxx\Debug\2e1l4y71\arm64-v8a'
-ninja: no work to do.

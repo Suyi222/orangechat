@@ -35,6 +35,7 @@ import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV2Migration
 import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV3Migration
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
+import me.rerere.rikkahub.data.model.ExternalMemory
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.PromptInjection
@@ -153,6 +154,11 @@ class SettingsStore(
         // 主动消息设置
         val PROACTIVE_MESSAGE_SETTING = stringPreferencesKey("proactive_message_setting")
 
+        // 保活服务设置
+        val KEEP_ALIVE_ENABLED = booleanPreferencesKey("keep_alive_enabled")
+
+        // 外置记忆库
+        val EXTERNAL_MEMORIES = stringPreferencesKey("external_memories")
     }
 
     private val dataStore = context.settingsStore
@@ -248,6 +254,10 @@ class SettingsStore(
                 proactiveMessageSetting = preferences[PROACTIVE_MESSAGE_SETTING]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: ProactiveMessageSetting(),
+                keepAliveEnabled = preferences[KEEP_ALIVE_ENABLED] == true,
+                externalMemories = preferences[EXTERNAL_MEMORIES]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
             )
         }
         .map {
@@ -411,6 +421,8 @@ class SettingsStore(
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
             preferences[SYSTEM_TOOLS_SETTING] = JsonInstant.encodeToString(settings.systemToolsSetting)
             preferences[PROACTIVE_MESSAGE_SETTING] = JsonInstant.encodeToString(settings.proactiveMessageSetting)
+            preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
+            preferences[EXTERNAL_MEMORIES] = JsonInstant.encodeToString(settings.externalMemories)
         }
     }
 
@@ -540,6 +552,8 @@ data class Settings(
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
     val proactiveMessageSetting: ProactiveMessageSetting = ProactiveMessageSetting(),
+    val keepAliveEnabled: Boolean = false,
+    val externalMemories: List<ExternalMemory> = emptyList(),
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储

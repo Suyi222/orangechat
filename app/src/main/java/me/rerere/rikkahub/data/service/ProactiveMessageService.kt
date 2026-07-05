@@ -295,6 +295,10 @@ class ProactiveMessageService : KoinComponent {
         return sb.toString()
     }
 
+
+    suspend fun getLastMessageTimeMs(): Long {
+        return try { getLastMessageTime()?.toEpochMilliseconds() ?: 0L } catch (e: Exception) { 0L }
+    }
     private suspend fun getLastMessageTime(): kotlinx.datetime.Instant? {
         return try {
             val settings = settingsStore.settingsFlow.first()
@@ -436,6 +440,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val conversationId = conversationId!!
 
                 // 构建上下文
+                val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
+
                 val contextStr = proactiveMessageService.buildProactiveContext(
                     this@ProactiveMessageTriggerService, settings
                 )
@@ -448,7 +454,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 } ?: emptyList()
 
                 // 构建系统提示词（包含记忆）
-                val systemPrompt = buildSystemPrompt(assistant, settings)
+                val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes)
 
                 // 构建用户上下文消息
                 val userMessage = UIMessage(
@@ -527,7 +533,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 执行生成，支持工具调用
-                val (finalMessages, hasToolCalls) = generateWithTools(
+                val (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
                     conversationId = conversationId,
                     providerImpl = providerImpl,
                     providerSetting = providerSetting,
@@ -538,19 +544,38 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     assistant = assistant,
                     settings = settings
                 )
-                
+
                 // 提取AI消息
                 val aiMessage = finalMessages.lastOrNull() ?: UIMessage(
                     role = MessageRole.ASSISTANT,
                     parts = emptyList()
                 )
-                
-                val replyText = aiMessage.parts.filterIsInstance<UIMessagePart.Text>()
+
+                // 解析 [JUMP] 标记（仅当设置开启时才可能跳转）
+                val allowForceJump = proactiveSetting.allowForceJump
+                val rawText = aiMessage.parts.filterIsInstance<UIMessagePart.Text>()
                     .joinToString("\n") { it.text }.trim()
+                val replyText = rawText.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim()
+                val reachThreshold = idleMinutes >= proactiveSetting.jumpIdleThresholdMinutes
+                val shouldJump = allowForceJump && reachThreshold && hasJumpFlag // 超过阈值 + AI判断需要跳转
 
-                Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls")
+                // 若移除了标记，同步更新 session 里 aiMessage 的文本 parts
+                if (rawText != replyText) {
+                    val cleanedAiMessage = aiMessage.copy(
+                        parts = aiMessage.parts.map { part ->
+                            if (part is UIMessagePart.Text) {
+                                UIMessagePart.Text(part.text.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim())
+                            } else {
+                                part
+                            }
+                        }
+                    )
+                    updateOrAppendAiMessage(conversationId, cleanedAiMessage)
+                }
 
-                if (replyText.isBlank() || replyText.contains("[PASS]")) {
+                Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls, shouldJump=$shouldJump")
+
+                if (replyText.isBlank() || rawText.contains("[PASS]")) {
                     // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
                     val aiId = aiMessage.id
@@ -567,12 +592,37 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         settings, assistant, conversationId, conversation
                     )
                     showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
+                    // 强制跳转屏幕到聊天界面（方案 A：普通拉起前台）
+                    if (shouldJump) {
+                        try {
+                            val jumpIntent = Intent(this@ProactiveMessageTriggerService, RouteActivity::class.java).apply {
+                                addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                )
+                                putExtra("conversationId", conversationId.toString())
+                            }
+                            startActivity(jumpIntent)
+                            Log.d(TAG, "Force jump to conversation $conversationId")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Force jump failed", e)
+                        }
+                    }
                 }
-
-                ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
             } finally {
+                // 确保无论成功/失败都安排下一次，避免一次 API 错误（如 400）永久中断定时链
+                try {
+                    val currentSettings = settingsStore.settingsFlow.first()
+                    ProactiveMessageService.scheduleNext(
+                        this@ProactiveMessageTriggerService,
+                        currentSettings.proactiveMessageSetting
+                    )
+                } catch (e: Exception) {
+                    Log.e(ProactiveMessageService.TAG, "Failed to reschedule after completion/error", e)
+                }
                 conversationId?.let { chatService.removeConversationReference(it) }
                 stopSelf()
             }
@@ -584,7 +634,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     /**
      * 构建系统提示词，包含记忆等内容
      */
-    private suspend fun buildSystemPrompt(assistant: Assistant, settings: Settings): String {
+    private suspend fun buildSystemPrompt(assistant: Assistant, settings: Settings, idleMinutes: Int = 0, jumpThreshold: Int = 120): String {
         return buildString {
             // 基础系统提示词
             val effectiveSystemPrompt = if (assistant.allowConversationSystemPrompt) {
@@ -612,6 +662,18 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                 }
             }
+
+            // 主动消息跳转规则（注入阈值，以用户系统提示词为准）
+            appendLine()
+            appendLine()
+            appendLine("## 主动消息跳转规则")
+            appendLine("距离用户上次回复已过去 $idleMinutes 分钟。跳转阈值: $jumpThreshold 分钟。")
+            appendLine("当满足以下条件时，在消息末尾追加 [JUMP] 标记（单独一行）：")
+            appendLine("- 距离用户上次回复超过 $jumpThreshold 分钟，且这条消息比较重要/紧急")
+            appendLine("- 或者用户之前明确提到过、现在该提醒的事")
+            appendLine("如果用户刚回复过（未超阈值），或只是一般闲聊，则不要追加 [JUMP]。")
+            appendLine("如果你在自己的系统提示词里有其他关于通知/提醒/跳转的规则，以你的规则为准优先。")
+            appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
         }
     }
 
@@ -684,17 +746,17 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             if (settings.enableWebSearch) {
                 addAll(createSearchTools(settings))
             }
-            
+
             // 本地工具
-addAll(localTools.getTools(assistant.localTools))
-            
+            addAll(localTools.getTools(assistant.localTools))
+
             // 系统工具（位置、通知、日历、闹钟、相机）
             val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
             if (systemToolsOptions.isNotEmpty()) {
                 val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings)
                 addAll(systemTools.getTools(systemToolsOptions))
             }
-            
+
             // Skill 工具
             if (assistant.enabledSkills.isNotEmpty()) {
                 addAll(
@@ -705,7 +767,7 @@ addAll(localTools.getTools(assistant.localTools))
                     )
                 )
             }
-            
+
             // MCP 工具
             mcpManager.getAllAvailableTools().forEach { (serverId, tool) ->
                 add(
@@ -720,7 +782,7 @@ addAll(localTools.getTools(assistant.localTools))
                     )
                 )
             }
-            
+
             // 插件工具
             addAll(pluginToolProvider.getTools())
         }
@@ -759,6 +821,23 @@ addAll(localTools.getTools(assistant.localTools))
     }
 
     /**
+     * 合并相邻同角色（尤其 assistant）消息，避免相邻 assistant 触发部分 API 的 400 错误。
+     * 仅合并 ASSISTANT 角色相邻消息（USER/SYSTEM 相邻多数 API 允许，工具结果在 assistant parts 内）。
+     */
+    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
+        if (messages.size < 2) return messages
+        return messages.fold(emptyList()) { acc, msg ->
+            val prev = acc.lastOrNull()
+            if (prev != null && prev.role == MessageRole.ASSISTANT && msg.role == MessageRole.ASSISTANT) {
+                // 合并 parts 到上一条 assistant，保留上一条 id（流式更新已按 id 建立 node）
+                acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
+            } else {
+                acc + msg
+            }
+        }
+    }
+
+    /**
      * 生成消息，支持工具调用
      * 返回最终消息列表和是否发生了工具调用
      */
@@ -772,12 +851,17 @@ addAll(localTools.getTools(assistant.localTools))
         model: Model,
         assistant: Assistant,
         settings: Settings
-    ): Pair<List<UIMessage>, Boolean> {
+    ): Triple<List<UIMessage>, Boolean, Boolean> {
         var messages = initialMessages.toMutableList()
         var hasToolCalls = false
+        var hasJumpFlag = false // AI 原始输出是否含 [JUMP] 标记（在输出转换器处理前检测）
 
         for (step in 0 until MAX_TOOL_STEPS) {
             Log.d(TAG, "generateWithTools: step $step/${MAX_TOOL_STEPS}")
+
+            // 防御性：每轮调用前合并相邻同角色（尤其 assistant）消息，
+            // 避免工具调用多步生成产生相邻 assistant 消息触发 API 400
+            messages = mergeAdjacentSameRoleMessages(messages).toMutableList()
 
             // 流式调用 AI（替代非流式 generateText，兼容 thinking 模型）
             var streamMessages = messages.toList()
@@ -803,6 +887,13 @@ addAll(localTools.getTools(assistant.localTools))
                 break
             }
 
+
+            // 在输出转换器处理前，检测 AI 原始输出是否含 [JUMP] 标记
+            val rawAiText = aiMessage.parts.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+            if (rawAiText.contains("[JUMP]")) {
+                hasJumpFlag = true
+                Log.d(TAG, "[JUMP] flag detected in raw AI output")
+            }
             // 应用输出转换器
             val processedMessage = listOf(aiMessage).transforms(
                 transformers = outputTransformers,
@@ -889,7 +980,7 @@ addAll(localTools.getTools(assistant.localTools))
             updateOrAppendAiMessage(conversationId, updatedMessage)
         }
 
-        return Pair(messages, hasToolCalls)
+        return Triple(messages, hasToolCalls, hasJumpFlag)
     }
 
     override fun onBind(intent: Intent?): android.os.IBinder? = null
