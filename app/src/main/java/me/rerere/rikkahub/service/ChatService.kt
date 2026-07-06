@@ -715,6 +715,15 @@ addAll(localTools.getTools(assistant.localTools))
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
 
+            // 自动唤起网易云音乐：扫描刚完成的 assistant 文本中的 orpheus:// scheme
+            try {
+                val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
+                val messageText = lastAssistantMessage?.toText() ?: ""
+                launchNeteaseCloudMusic(messageText)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to launch NetEase Cloud Music", e)
+            }
+
             // 触发 message_received 事件钩子
             try {
                 val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
@@ -1511,5 +1520,68 @@ addAll(localTools.getTools(assistant.localTools))
             )
         )
         saveConversation(conversationId, updatedConversation)
+    }
+
+    /**
+     * 扫描 AI 回复文本中的网易云音乐链接并自动唤起播放指定歌曲。
+     *
+     * 网易云音乐 scheme 解析规则（外部调用实测）：
+     * - `orpheus://song/{id}`        仅跳转歌曲页，不自动播放（停留在原队列）
+     * - `orpheus://song/{id}/?autoplay=1`  跳转并自动播放该歌曲（推荐）
+     * - `https://music.163.com/song?id={id}` 在部分 ROM（如华为）会被浏览器劫持，不可靠
+     *
+     * 因此统一使用带 autoplay=1 的 orpheus scheme，并强制用网易云包名打开。
+     */
+    private fun launchNeteaseCloudMusic(text: String) {
+        if (text.isBlank()) return
+        val songId = extractNeteaseSongId(text) ?: return
+        val uri = "orpheus://song/$songId/?autoplay=1"
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, uri.toUri()).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                setPackage("com.netease.cloudmusic")
+            }
+            context.startActivity(intent)
+            Logging.log(TAG, "Launched NetEase Cloud Music, songId=$songId, uri=$uri")
+        }.onFailure { e ->
+            // 兜底 1：去掉包名限制（极少数定制 ROM 带 package 会被拦截）
+            runCatching {
+                val fallback = Intent(Intent.ACTION_VIEW, uri.toUri())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(fallback)
+                Logging.log(TAG, "Launched NetEase Cloud Music (no package), songId=$songId")
+            }.onFailure {
+                // 兜底 2：orpheuswidget:// scheme（部分版本只认这个）
+                runCatching {
+                    val widgetUri = "orpheuswidget://song/$songId"
+                    val widgetIntent = Intent(Intent.ACTION_VIEW, widgetUri.toUri())
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(widgetIntent)
+                    Logging.log(TAG, "Launched NetEase Cloud Music (widget scheme), songId=$songId")
+                }.onFailure {
+                    Log.w(TAG, "NetEase Cloud Music not available, songId=$songId", e)
+                }
+            }
+        }
+    }
+
+    /**
+     * 从文本中提取网易云歌曲 ID。支持两种 AI 可能输出的格式：
+     * - orpheus://song/{id}
+     * - music.163.com/song?id={id} 或 music.163.com/?songid={id}
+     */
+    private fun extractNeteaseSongId(text: String): String? {
+        // orpheus://song/{id}
+        Regex("orpheus://song/(\\d+)").find(text)?.let {
+            return it.groupValues[1]
+        }
+        // music.163.com/song?id={id}
+        Regex("music\\.163\\.com/song\\?.*?(?:^|[^0-9])(\\d{4,})").find(text)?.let {
+            return it.groupValues[1]
+        }
+        Regex("music\\.163\\.com/song\\?id=(\\d+)").find(text)?.let {
+            return it.groupValues[1]
+        }
+        return null
     }
 }
