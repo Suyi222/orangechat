@@ -79,7 +79,12 @@ fun RikkahubTheme(
     val extendColors = if (darkTheme) ExtendDarkColors else ExtendLightColors
 
     // 颜色自定义覆盖
-    val finalColorScheme = remember(colorSchemeConverted, settings.displaySetting.primaryColor, settings.displaySetting.globalTextColor) {
+    val finalColorScheme = remember(
+        colorSchemeConverted,
+        settings.displaySetting.primaryColor,
+        settings.displaySetting.globalTextColor,
+        settings.themeId,
+    ) {
         var scheme = colorSchemeConverted
         settings.displaySetting.primaryColor?.let { pc ->
             val primaryColor = pc.toComposeColor()
@@ -96,6 +101,27 @@ fun RikkahubTheme(
                 onBackground = textColor,
                 onSurface = textColor,
                 onSurfaceVariant = textColor,
+            )
+        }
+        if (settings.themeId == "pearltide") {
+            // 珍珠潮汐主题专属:统一让默认读取这几个 token 的容器变透明/半透明,
+            // 这样 Scaffold、Card、TopAppBar、ModalDrawerSheet、ModalBottomSheet 等
+            // 全部自动生效,不需要逐个页面单独改。
+            // 这个 if 分支只在 themeId 精确等于 "pearltide" 时才会执行,
+            // 其余六个官方预设(id 分别是 ocean/sakura/spring/autumn/black/claude)
+            // 以及用户自定义主题(id 是随机 UUID,不会等于这个字符串)完全不受影响。
+            val glassAlpha = 0.6f
+            scheme = scheme.copy(
+                background = scheme.background.copy(alpha = 0f),
+                surface = scheme.surface.copy(alpha = glassAlpha),
+                surfaceBright = scheme.surfaceBright.copy(alpha = glassAlpha),
+                surfaceDim = scheme.surfaceDim.copy(alpha = glassAlpha),
+                surfaceContainerLowest = scheme.surfaceContainerLowest.copy(alpha = glassAlpha),
+                surfaceContainerLow = scheme.surfaceContainerLow.copy(alpha = glassAlpha),
+                surfaceContainer = scheme.surfaceContainer.copy(alpha = glassAlpha),
+                surfaceContainerHigh = scheme.surfaceContainerHigh.copy(alpha = glassAlpha),
+                surfaceContainerHighest = scheme.surfaceContainerHighest.copy(alpha = glassAlpha),
+                surfaceVariant = scheme.surfaceVariant.copy(alpha = glassAlpha),
             )
         }
         scheme

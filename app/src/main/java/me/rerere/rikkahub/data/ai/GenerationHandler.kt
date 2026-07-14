@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.conflate
@@ -58,6 +59,13 @@ import java.util.Locale
 import kotlin.time.Clock
  
 private const val TAG = "GenerationHandler"
+ 
+// 流式生成时往 UI 推送消息更新的最小间隔。
+// AI 的 SSE 增量可能每秒到达几十次，如果每次都原样同步到 UI 的 StateFlow，
+// 会导致 Compose 高频重组（Markdown 全量重解析、代码高亮重新分词、
+// animateContentSize 的尺寸补间动画被不断打断重启），表现为打字机效果的"抖动/掉帧"。
+// 这里把推送频率限制在这个间隔以内，肉眼完全感知不到延迟，但能大幅降低重组频率。
+private const val STREAM_UI_THROTTLE_MS = 50L
  
 @Serializable
 sealed interface GenerationChunk {
@@ -343,7 +351,7 @@ class GenerationHandler(
             )
         }
  
-    }.conflate()
+    }.throttleLatest(STREAM_UI_THROTTLE_MS)
         .flowOn(Dispatchers.IO)
  
     private suspend fun generateInternal(
@@ -689,6 +697,28 @@ class GenerationHandler(
             }
         }
     }.flowOn(Dispatchers.IO)
+}
+ 
+/**
+ * 把原始 Flow 的高频发射节流成"每 periodMillis 毫秒最多发一次最新值"。
+ *
+ * 实现方式：对上游调用 conflate()（只保留未被消费的最新一个值，中间值会被丢弃），
+ * 然后在 collect 里每处理完一个值就 delay(periodMillis)。这样在上游快速连续发射时，
+ * delay 期间产生的多个值会被 conflate 自动合并成"最新一个"，delay 结束后立刻拿到它；
+ * 但由于用的是"发一个、等一段时间、再要下一个"的顺序结构，上游结束前最后一次真正的发射
+ * 一定会被完整地 collect 到并 emit 出去，不会像 sample() 那样有丢失最终值的风险。
+ *
+ * 用于把 AI 流式输出的高频消息更新（可能每秒几十次）降频到 UI 友好的节奏，从源头
+ * 消除打字机效果的抖动/掉帧，同时保证生成结束时 UI 一定能拿到完整的最终内容。
+ */
+private fun <T> Flow<T>.throttleLatest(periodMillis: Long): Flow<T> {
+    val upstream = this
+    return flow {
+        upstream.conflate().collect { value ->
+            emit(value)
+            delay(periodMillis)
+        }
+    }
 }
  
 /**

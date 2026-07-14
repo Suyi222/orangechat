@@ -20,40 +20,42 @@ fun AssistantBackground(setting: Settings) {
     val assistant = setting.getCurrentAssistant()
     val chatBackgroundColor = setting.displaySetting.chatBackgroundColor?.let { it.toComposeColor() }
 
-    if (assistant.background != null) {
-        // 背景图优先
-        val backgroundColor = chatBackgroundColor ?: MaterialTheme.colorScheme.background
-        val backgroundOpacity = assistant.backgroundOpacity.coerceIn(0f, 1f)
-        Box {
-            AsyncImage(
-                model = assistant.background,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .alpha(backgroundOpacity)
-            )
+    when {
+        assistant.background != null -> {
+            // 用户手动为助手设置的背景图，优先级最高
+            val backgroundColor = chatBackgroundColor ?: MaterialTheme.colorScheme.background
+            val backgroundOpacity = assistant.backgroundOpacity.coerceIn(0f, 1f)
+            Box {
+                AsyncImage(
+                    model = assistant.background,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(backgroundOpacity)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    backgroundColor.copy(alpha = 0.2f),
+                                    backgroundColor.copy(alpha = 0.5f)
+                                )
+                            )
+                        )
+                )
+            }
+        }
 
-            // 全屏渐变遮罩
+        chatBackgroundColor != null -> {
+            // 用户设置了自定义纯色背景
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                backgroundColor.copy(alpha = 0.2f),
-                                backgroundColor.copy(alpha = 0.5f)
-                            )
-                        )
-                    )
+                    .background(chatBackgroundColor)
             )
         }
-    } else if (chatBackgroundColor != null) {
-        // 无背景图时使用自定义聊天背景色
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(chatBackgroundColor)
-        )
     }
 }
