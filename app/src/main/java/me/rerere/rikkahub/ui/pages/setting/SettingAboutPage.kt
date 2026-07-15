@@ -192,6 +192,32 @@ fun SettingAboutPage() {
                         )
                     }
                 }
+
+                item {
+                    CardGroup(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    ) {
+                        item(
+                            onClick = { context.openUrl("https://github.com/rikkahub/rikkahub") },
+                            leadingContent = { Icon(HugeIcons.Github, null) },
+                            supportingContent = {
+                                Text(stringResource(R.string.about_page_upstream_desc))
+                            },
+                            headlineContent = { Text(stringResource(R.string.about_page_upstream_name)) },
+                        )
+                    }
+                }
+
+                item {
+                    Text(
+                        text = stringResource(R.string.about_page_derivation_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp),
+                    )
+                }
             }
         }
     }

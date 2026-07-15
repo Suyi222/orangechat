@@ -30,7 +30,13 @@ build_*.log
 _chk/
 _chk.zip
 *.apk
+*.aab
 _projB_*.txt
 .projB_*.txt
 gen_*.py
 _gen.py
+
+# 签名密钥（绝不可提交）
+*.jks
+*.keystore
+keystore.properties
