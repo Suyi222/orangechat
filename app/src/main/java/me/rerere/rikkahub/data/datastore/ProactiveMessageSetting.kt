@@ -21,6 +21,9 @@ data class ProactiveMessageSetting(
     val aggressiveModeEnabled: Boolean = false,
     // 激进模式下两次AI思考之间的最小间隔（秒），防抖+限流
     val aggressiveMinIntervalSeconds: Int = 60,
+    // 激进模式下，检测到设备事件（切应用/开关屏/回桌面）后，
+    // 等待多少秒的防抖时间才真正触发 AI 思考。原来硬编码 30 秒，现在可调节。
+    val aggressiveDebounceSeconds: Int = 30,
     // 悬浮球：主动消息到达时以 Telegram 风格悬浮球提醒，点击直接进入聊天页
     val floatingBubbleEnabled: Boolean = false,
 )

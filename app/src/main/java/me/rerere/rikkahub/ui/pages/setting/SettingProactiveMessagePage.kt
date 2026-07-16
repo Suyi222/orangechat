@@ -274,6 +274,31 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 Text("两次 AI 思考之间的最小间隔（秒）。防抖+限流，避免频繁触发浪费 token。最小10秒。")
                             },
                         )
+                        // 防抖等待时间设置（仅当激进模式开启时显示）
+                        item(
+                            headlineContent = { Text("激进模式防抖等待 (秒)") },
+                            supportingContent = {
+                                OutlinedTextField(
+                                    value = settings.proactiveMessageSetting.aggressiveDebounceSeconds.toString(),
+                                    onValueChange = { value ->
+                                        val seconds = value.toIntOrNull()
+                                        if (seconds != null && seconds >= 3) {
+                                            vm.updateSettings(
+                                                settings.copy(
+                                                    proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                                                        aggressiveDebounceSeconds = seconds
+                                                    )
+                                                )
+                                            )
+                                        }
+                                    },
+                                    placeholder = { Text("30") },
+                                    singleLine = true,
+                                    modifier = Modifier.padding(top = 8.dp),
+                                )
+                                Text("检测到切换应用/开关屏/回桌面等操作后，等待多少秒再让 AI 思考（期间的新操作会重新计时）。设多少就是精确多少秒，不是随机值。最小3秒。")
+                            },
+                        )
                     }
                 }
             }

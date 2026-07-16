@@ -8,17 +8,9 @@
 
 package me.rerere.rikkahub.data.service
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
-import android.os.Bundle
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 data class LocationInfo(
     val latitude: Double,
@@ -27,7 +19,9 @@ data class LocationInfo(
     val city: String = "",
     val district: String = "",
     val street: String = "",
-    val poiList: List<PoiInfo> = emptyList()
+    val poiList: List<PoiInfo> = emptyList(),
+    val isFresh: Boolean = true,   // 本次定位数据是否是新鲜的（刚定位到或在新鲜期内）；false 表示使用的是已过期缓存兜底
+    val ageMs: Long = 0L,          // 这份数据距离现在过去了多久（毫秒），isFresh=true 时应接近 0
 )
 
 data class PoiInfo(
@@ -43,66 +37,57 @@ class LocationService(
     private val context: Context,
     private val amapService: AmapService
 ) {
-    private val locationManager: LocationManager by lazy {
-        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    }
-
-    @SuppressLint("MissingPermission")
     suspend fun getCurrentLocation(amapApiKey: String): Result<LocationInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val location = getLastKnownLocation()
-                ?: requestFreshLocation()
+            val fetched = DeviceLocationFetcher.fetch(context)
+                ?: throw IllegalStateException("无法获取位置信息")
+            val location = fetched.location
 
-            if (location != null) {
-                // GPS坐标(WGS84)需要先转换为高德坐标(GCJ02)才能正确逆地理编码
-                val amapCoord = amapService.convertToAmapCoord(location.latitude, location.longitude)
-                val lat = amapCoord?.first ?: location.latitude
-                val lng = amapCoord?.second ?: location.longitude
+            // GPS坐标(WGS84)需要先转换为高德坐标(GCJ02)才能正确逆地理编码
+            val amapCoord = amapService.convertToAmapCoord(location.latitude, location.longitude)
+            val lat = amapCoord?.first ?: location.latitude
+            val lng = amapCoord?.second ?: location.longitude
 
-                val address = amapService.reverseGeocode(lat, lng)
-                if (!address.success) {
-                    android.util.Log.w("LocationService", "Reverse geocode failed: ${address.error}")
-                }
-                LocationInfo(
-                    latitude = location.latitude,
-                    longitude = location.longitude,
-                    address = address.formattedAddress ?: "",
-                    city = address.city ?: address.province ?: "",
-                    district = address.district ?: "",
-                    street = buildString {
-                        append(address.street ?: "")
-                        if (!address.streetNumber.isNullOrBlank()) {
-                            append(address.streetNumber)
-                        }
-                    }
-                )
-            } else {
-                throw IllegalStateException("无法获取位置信息")
+            val address = amapService.reverseGeocode(lat, lng)
+            if (!address.success) {
+                android.util.Log.w("LocationService", "Reverse geocode failed: ${address.error}")
             }
+            LocationInfo(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                address = address.formattedAddress ?: "",
+                city = address.city ?: address.province ?: "",
+                district = address.district ?: "",
+                street = buildString {
+                    append(address.street ?: "")
+                    if (!address.streetNumber.isNullOrBlank()) {
+                        append(address.streetNumber)
+                    }
+                },
+                isFresh = fetched.isFresh,
+                ageMs = fetched.ageMs
+            )
         }
     }
 
     /**
      * 仅获取坐标，不需要高德API Key，不进行逆地理编码
      */
-    @SuppressLint("MissingPermission")
     suspend fun getCoordinatesOnly(): Result<LocationInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val location = getLastKnownLocation()
-                ?: requestFreshLocation()
+            val fetched = DeviceLocationFetcher.fetch(context)
+                ?: throw IllegalStateException("无法获取位置信息")
+            val location = fetched.location
 
-            if (location != null) {
-                LocationInfo(
-                    latitude = location.latitude,
-                    longitude = location.longitude
-                )
-            } else {
-                throw IllegalStateException("无法获取位置信息")
-            }
+            LocationInfo(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                isFresh = fetched.isFresh,
+                ageMs = fetched.ageMs
+            )
         }
     }
 
-    @SuppressLint("MissingPermission")
     suspend fun exploreNearby(
         amapApiKey: String,
         keyword: String = "",
@@ -110,12 +95,9 @@ class LocationService(
         type: String = ""
     ): Result<List<PoiInfo>> = withContext(Dispatchers.IO) {
         runCatching {
-            val location = getLastKnownLocation()
-                ?: requestFreshLocation()
-
-            if (location == null) {
-                throw IllegalStateException("无法获取位置信息，请先开启定位")
-            }
+            val fetched = DeviceLocationFetcher.fetch(context)
+                ?: throw IllegalStateException("无法获取位置信息，请先开启定位")
+            val location = fetched.location
 
             amapService.searchNearbyPoi(
                 latitude = location.latitude,
@@ -133,59 +115,6 @@ class LocationService(
                     longitude = poi.longitude
                 )
             }
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun getLastKnownLocation(): Location? {
-        val providers = locationManager.getProviders(true)
-        return providers.mapNotNull { provider ->
-            locationManager.getLastKnownLocation(provider)
-        }.maxByOrNull { it.accuracy }
-    }
-
-    @SuppressLint("MissingPermission")
-    private suspend fun requestFreshLocation(): Location? {
-        return try {
-            kotlinx.coroutines.withTimeoutOrNull(10_000L) {
-                suspendCancellableCoroutine<Location?> { cont ->
-                    val providers = locationManager.getProviders(true)
-                    val bestProvider = providers.firstOrNull()
-                        ?: locationManager.getProvider(LocationManager.GPS_PROVIDER)?.let { LocationManager.GPS_PROVIDER }
-                        ?: locationManager.getProvider(LocationManager.NETWORK_PROVIDER)?.let { LocationManager.NETWORK_PROVIDER }
-                        ?: return@suspendCancellableCoroutine cont.resume(null)
-
-                    val listener = object : LocationListener {
-                        override fun onLocationChanged(location: Location) {
-                            locationManager.removeUpdates(this)
-                            if (cont.isActive) cont.resume(location)
-                        }
-
-                        override fun onProviderDisabled(provider: String) {
-                            locationManager.removeUpdates(this)
-                            if (cont.isActive) cont.resume(null)
-                        }
-
-                        @Deprecated("Deprecated in Java")
-                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-
-                        override fun onProviderEnabled(provider: String) {}
-                    }
-
-                    cont.invokeOnCancellation {
-                        locationManager.removeUpdates(listener)
-                    }
-
-                    locationManager.requestLocationUpdates(
-                        bestProvider,
-                        0L,
-                        0f,
-                        listener
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            null
         }
     }
 }

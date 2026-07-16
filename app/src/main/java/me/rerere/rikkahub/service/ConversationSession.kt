@@ -102,6 +102,26 @@ class ConversationSession(
 
     fun getJob(): Job? = _generationJob.value
 
+    /**
+     * 原子地尝试把 newJob 注册为当前会话的生成任务，仅当当前没有生成任务在进行时才成功。
+     * 用于主动消息/激进模式等"低优先级"生成源：如果已有生成在跑（无论是正常聊天还是
+     * 另一路主动消息），直接返回 false，调用方应放弃本次触发，而不是排队等待。
+     *
+     * 与 setJob() 的区别：setJob() 是"强制抢占"（会取消旧 job），用于用户主动发消息这种
+     * 应该无条件打断旧生成的场景；tryClaimGeneration() 是"礼貌性尝试"，用于不应该打断
+     * 已有生成的低优先级场景。
+     *
+     * 注意：调用方在拿不到 Job 引用（返回 false）时，应打印包含 conversationId 的 debug
+     * 日志说明"因为会话正在生成中，跳过本次触发"，方便排查。
+     */
+    private val claimLock = Any()
+
+    fun tryClaimGeneration(newJob: Job): Boolean = synchronized(claimLock) {
+        if (isGenerating) return@synchronized false
+        setJob(newJob)
+        true
+    }
+
     private fun scheduleIdleCheck() {
         idleCheckJob?.cancel()
         idleCheckJob = scope.launch {

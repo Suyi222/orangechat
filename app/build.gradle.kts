@@ -82,6 +82,11 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            // 统一 debug 签名为 release keystore，避免不同机器的默认 debug.keystore
+            // 签名不一致导致 adb install -r 覆盖安装失败（Failure [-99]）。
+            // 前提：local.properties 里配置了 storeFile/storePassword/keyAlias/keyPassword。
+            // 未配置时 release 签名为空，Gradle 会回退用默认 debug 签名，不影响无 keystore 的人编译。
+            signingConfig = signingConfigs.getByName("release")
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
         }

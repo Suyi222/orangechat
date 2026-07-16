@@ -48,7 +48,7 @@ private const val TAG = "DeviceEventAiTrigger"
  * 激进模式常驻前台服务：
  * - 监听亮屏/锁屏（ACTION_SCREEN_ON / ACTION_SCREEN_OFF 动态广播）
  * - 每 3 秒轮询 UsageStatsManager.queryEvents 检测应用切换/回桌面
- * - 收到事件后防抖 30 秒（批量收集），限流检查后触发 AI 思考
+ * - 收到事件后按用户设置的秒数防抖（批量收集），默认 30 秒，限流检查后触发 AI 思考
  * - AI 思考复用 ProactiveMessageTriggerService 的核心逻辑
  */
 class DeviceEventAiTriggerService : Service() {
@@ -56,7 +56,8 @@ class DeviceEventAiTriggerService : Service() {
     companion object {
         const val NOTIFICATION_ID = 20005
         private const val POLL_INTERVAL_MS = 3000L
-        private const val DEBOUNCE_DELAY_MS = 30_000L
+        // 默认防抖延迟（毫秒），仅在读取设置失败/值非法时兜底使用
+        private const val DEFAULT_DEBOUNCE_DELAY_MS = 30_000L
 
         fun startIfEnabled(context: Context) {
             try {
@@ -133,7 +134,7 @@ class DeviceEventAiTriggerService : Service() {
                     val now = System.currentTimeMillis()
                     serviceScope.launch {
                         addEvent(DeviceEvent(eventType, "", "", now))
-                        scheduleDebounce()
+                        scheduleDebounce(getDebounceDelayMs())
                     }
                 }
             }
@@ -220,7 +221,7 @@ class DeviceEventAiTriggerService : Service() {
                                     appName = detectedAppName,
                                     timestamp = now
                                 ))
-                                scheduleDebounce()
+                                scheduleDebounce(getDebounceDelayMs())
                             }
                             lastForegroundPackage = detectedForeground
                         }
@@ -265,14 +266,31 @@ class DeviceEventAiTriggerService : Service() {
     }
 
     /**
-     * 防抖：收到事件后等待 30 秒，期间新事件会重置计时器
+     * 防抖：收到事件后等待指定时长，期间新事件会重置计时器
      * 防抖结束后检查限流，满足条件则触发 AI 思考
      */
-    private fun scheduleDebounce() {
+    private fun scheduleDebounce(delayMs: Long) {
         debounceJob?.cancel()
         debounceJob = serviceScope.launch {
-            delay(DEBOUNCE_DELAY_MS)
+            delay(delayMs)
             triggerAiThinking()
+        }
+    }
+
+    /**
+     * 从设置读取用户配置的防抖秒数，转换成毫秒。
+     * 读取失败或值非法（<=0）时兜底用 DEFAULT_DEBOUNCE_DELAY_MS，避免因为一次设置读取异常
+     * 导致激进模式完全不触发。
+     */
+    private suspend fun getDebounceDelayMs(): Long {
+        return try {
+            val settingsStore = GlobalContext.get().get<SettingsStore>()
+            val settings = settingsStore.settingsFlowRaw.first()
+            val seconds = settings.proactiveMessageSetting.aggressiveDebounceSeconds
+            if (seconds > 0) seconds * 1000L else DEFAULT_DEBOUNCE_DELAY_MS
+        } catch (e: Exception) {
+            Log.e(TAG, "getDebounceDelayMs failed, fallback to default ${DEFAULT_DEBOUNCE_DELAY_MS}ms", e)
+            DEFAULT_DEBOUNCE_DELAY_MS
         }
     }
 

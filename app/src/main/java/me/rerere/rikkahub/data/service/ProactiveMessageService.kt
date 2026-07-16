@@ -12,11 +12,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -244,10 +248,16 @@ class ProactiveMessageService : KoinComponent {
                 val locationResult = locationService.getCurrentLocation(amapApiKey)
                 if (locationResult.isSuccess) {
                     val location = locationResult.getOrThrow()
-                    if (location.address.isNotBlank()) {
-                        sb.appendLine("当前位置: ${location.address}")
+                    val locationLine = if (location.address.isNotBlank()) {
+                        "当前位置: ${location.address}"
                     } else {
-                        sb.appendLine("当前坐标: ${location.latitude}, ${location.longitude}")
+                        "当前坐标: ${location.latitude}, ${location.longitude}"
+                    }
+                    if (!location.isFresh) {
+                        val ageMinutes = location.ageMs / 60000
+                        sb.appendLine("$locationLine（注意：这是大约 ${ageMinutes} 分钟前的定位，可能不是当前实时位置，不要当作用户现在就在这里）")
+                    } else {
+                        sb.appendLine(locationLine)
                     }
                 }
             }
@@ -406,6 +416,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         const val EXTRA_FORCE_TRIGGER = "force_trigger"
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         const val EXTRA_DEVICE_EVENT_CONTEXT = "device_event_context"
+
+        // 保护 last_triggered_time 的 check-then-act 竞态（防止 AlarmManager 与 WorkManager
+        // 前后脚触发导致"最小间隔"被砍半）。纯同步 SharedPreferences 读写，无挂起点，用对象锁即可。
+        private val prefsLock = Any()
     }
 
     // 输入转换器（与 ChatService 保持一致）
@@ -459,20 +473,34 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 val prefs = getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
 
-                // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发
-                // 外部触发（网关轮询）跳过此检查，因为网关 poll 是独立信号源，不受内部闹钟链约束
+                // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发。
+                // 外部触发（网关轮询/激进模式设备事件）跳过此检查，因为这是独立信号源，不受内部闹钟链约束。
+                // 注意：isForceTrigger 跳过的是"时间间隔节流"（两回事），不跳过后面 tryClaimGeneration 的并发安全检查。
+                // 把"读取 last_triggered_time -> 判断 -> 写入"整段放在同步块里，修复 check-then-act 竞态。
                 if (!isForceTrigger) {
-                    val lastTriggeredTime = prefs.getLong("last_triggered_time", 0L)
-                    val minIntervalMs = proactiveSetting.minIntervalMinutes.coerceAtLeast(1) * 60 * 1000L
-                    if (System.currentTimeMillis() - lastTriggeredTime < minIntervalMs) {
+                    val skipDueToInterval = synchronized(prefsLock) {
+                        val lastTriggeredTime = prefs.getLong("last_triggered_time", 0L)
+                        val minIntervalMs = proactiveSetting.minIntervalMinutes.coerceAtLeast(1) * 60 * 1000L
+                        if (System.currentTimeMillis() - lastTriggeredTime < minIntervalMs) {
+                            true
+                        } else {
+                            // 立即写入触发时间，防止并发重复
+                            prefs.edit().putLong("last_triggered_time", System.currentTimeMillis()).apply()
+                            false
+                        }
+                    }
+                    if (skipDueToInterval) {
                         Log.d(TAG, "Duplicate trigger within min interval, skipping")
                         ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                         stopSelf()
                         return@launch
                     }
+                } else {
+                    // 强制触发也写入时间戳，保持与常规触发一致的状态记录
+                    synchronized(prefsLock) {
+                        prefs.edit().putLong("last_triggered_time", System.currentTimeMillis()).apply()
+                    }
                 }
-                // 立即写入触发时间，防止并发重复
-                prefs.edit().putLong("last_triggered_time", System.currentTimeMillis()).apply()
 
                 // 获取助手
                 val assistant = settings.assistants.find { it.id.toString() == proactiveSetting.assistantId }
@@ -495,6 +523,31 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 conversationId = conversation?.id ?: kotlin.uuid.Uuid.random()
                 val conversationId = conversationId!!
+
+                // 持有会话引用，防止生成期间 session 被 idle 清除（finally 块会对应 release）。
+                // 放在 claim 之前：即使 claim 失败提前返回，引用也能在 finally 里被正确释放，保持计数平衡。
+                // 同时把数据库里的完整对话同步到 session，防止流式更新时 conv 是空状态导致覆盖历史。
+                chatService.addConversationReference(conversationId)
+                if (conversation != null) {
+                    chatService.updateConversationState(conversationId) { _ -> conversation }
+                }
+
+                // 抢占生成权：尝试把当前协程的 Job 注册进 ConversationSession。
+                // 这一步对所有触发源（含 isForceTrigger / 激进模式设备事件）一视同仁，是并发安全的核心。
+                // 如果当前已有生成在跑（正常聊天或另一路主动消息），直接放弃本次触发，不排队等待、不重试。
+                // 理由：等对方生成结束后，上下文（用户可能已在聊别的话题）大概率已过时，硬等没有意义。
+                val myJob = coroutineContext[Job]
+                if (myJob == null || !chatService.getOrCreateSession(conversationId).tryClaimGeneration(myJob)) {
+                    Log.d(
+                        TAG,
+                        "Skip proactive trigger: session $conversationId already generating " +
+                            "(normal chat or another proactive trigger in progress)"
+                    )
+                    // 必须走到 finally 块的"安排下一次触发"逻辑，不能绕过定时链收尾。
+                    // 用 stopSelf + return@launch 退出主流程，finally 会正常执行（scheduleNext 已用 NonCancellable 保护）。
+                    stopSelf()
+                    return@launch
+                }
 
                 // 构建上下文
                 val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
@@ -593,12 +646,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 tools.forEach { t ->
                     val hasSchema = t.parameters() != null
                     if (!hasSchema) Log.w(TAG, "Tool '${t.name}' has NULL parameters schema — may cause API rejection")
-                }
-
-                // 把数据库里的完整对话同步到 session，防止流式更新时 conv 是空状态导致覆盖历史
-                chatService.addConversationReference(conversationId)
-                if (conversation != null) {
-                    chatService.updateConversationState(conversationId) { _ -> conversation }
                 }
 
                 // 执行生成，支持工具调用
@@ -725,6 +772,17 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                // 协程被取消（通常是用户发了新消息，sendMessage 里 session.getJob()?.cancel() 触发），
+                // 这是正常情况，不应当成错误。打印 debug 日志并重新抛出，遵循 Kotlin 协程取消传播语义。
+                // 注意 catch 顺序：CancellationException 必须在 Exception 之前，否则被泛化分支提前吃掉。
+                // 重新抛出后 finally 块仍会正常执行（scheduleNext 已用 NonCancellable 保护）。
+                Log.d(
+                    ProactiveMessageService.TAG,
+                    "Proactive generation cancelled (likely user started a new message), " +
+                        "conversationId=$conversationId"
+                )
+                throw e
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
                 // 如果是 API 返回的 HTTP 错误, 把原始错误体也打出来便于定位
@@ -760,17 +818,22 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                 }
             } finally {
-                // 确保无论成功/失败都安排下一次，避免一次 API 错误（如 400）永久中断定时链
-                // 激进模式设备事件触发时不需要安排下一次定时主动消息（由 DeviceEventAiTriggerService 自己驱动）
+                // 确保无论成功/失败/取消都安排下一次，避免一次 API 错误或用户打断永久中断定时链。
+                // 激进模式设备事件触发时不需要安排下一次定时主动消息（由 DeviceEventAiTriggerService 自己驱动）。
+                // 用 NonCancellable 包裹：协程被取消后处于已取消状态，finally 里的挂起点
+                // (settingsFlow.first()) 会立刻抛 CancellationException，导致 scheduleNext 被跳过、
+                // 定时链断裂。NonCancellable 保证这段收尾逻辑跑完。
                 if (!isFromDeviceEvent) {
-                    try {
-                        val currentSettings = settingsStore.settingsFlow.first()
-                        ProactiveMessageService.scheduleNext(
-                            this@ProactiveMessageTriggerService,
-                            currentSettings.proactiveMessageSetting
-                        )
-                    } catch (e: Exception) {
-                        Log.e(ProactiveMessageService.TAG, "Failed to reschedule after completion/error", e)
+                    withContext(NonCancellable) {
+                        try {
+                            val currentSettings = settingsStore.settingsFlow.first()
+                            ProactiveMessageService.scheduleNext(
+                                this@ProactiveMessageTriggerService,
+                                currentSettings.proactiveMessageSetting
+                            )
+                        } catch (e: Exception) {
+                            Log.e(ProactiveMessageService.TAG, "Failed to reschedule after completion/error/cancellation", e)
+                        }
                     }
                 }
                 conversationId?.let { chatService.removeConversationReference(it) }

@@ -22,6 +22,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.service.AmapService
+import me.rerere.rikkahub.data.service.DeviceLocationFetcher
 import me.rerere.rikkahub.data.service.RikkaNotificationListenerService
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -101,13 +102,14 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                     ))
                 }
                 try {
-                    val loc = LocationHelper.getCurrentLocation(context)
+                    val fetched = DeviceLocationFetcher.fetch(context)
 
-                    if (loc == null) {
+                    if (fetched == null) {
                         return@Tool listOf(UIMessagePart.Text(
                             buildJsonObject { put("success", false); put("error", "Unable to get location") }.toString()
                         ))
                     }
+                    val loc = fetched.location
 
                     val result = buildJsonObject {
                         put("success", true)
@@ -117,6 +119,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                         put("accuracy", loc.accuracy.toDouble())
                         put("timestamp", loc.time)
                         put("time", dateFormat.format(Date(loc.time)))
+                        // 明确告知 AI 这份数据是不是刚定位到的，避免 AI 把过期缓存当实时位置
+                        put("is_fresh", fetched.isFresh)
 
                         val apiKey = settings.systemToolsSetting.amapApiKey
                         var addressResolved = false
