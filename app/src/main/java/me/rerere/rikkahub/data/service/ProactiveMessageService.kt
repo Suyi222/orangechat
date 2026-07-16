@@ -698,6 +698,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         Log.w(ProactiveMessageService.TAG, "Failed to save proactive message to external memory", e)
                     }
                     showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
+                    // 悬浮球提醒（作为通知之上的增强层；无 overlay 权限时由 FloatingBubbleService 兜底跳过）
+                    if (proactiveSetting.floatingBubbleEnabled) {
+                        FloatingBubbleService.show(
+                            context = this@ProactiveMessageTriggerService,
+                            conversationId = conversationId.toString(),
+                            senderName = assistant.name.ifBlank { "AI" },
+                            avatar = assistant.avatar,
+                        )
+                    }
                     // 强制跳转屏幕到聊天界面（方案 A：普通拉起前台）
                     if (shouldJump) {
                         try {

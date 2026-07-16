@@ -10,6 +10,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -109,6 +111,54 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 } else {
                                     Text("等待调度中...")
                                 }
+                            }
+                        )
+                    }
+                    // 悬浮球开关（仅在主动消息启用时显示）
+                    if (settings.proactiveMessageSetting.enabled) {
+                        val overlayPermissionLauncher = rememberLauncherForActivityResult(
+                            contract = ActivityResultContracts.StartActivityForResult()
+                        ) { }
+                        val hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            Settings.canDrawOverlays(context)
+                        } else true
+
+                        item(
+                            headlineContent = { Text("悬浮球提醒") },
+                            supportingContent = {
+                                Text(
+                                    if (hasOverlayPermission) {
+                                        "主动消息到达时以悬浮球形式提醒，点击直接进入聊天页"
+                                    } else {
+                                        "需要先授予「显示在其他应用上层」权限才能显示悬浮球"
+                                    }
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.proactiveMessageSetting.floatingBubbleEnabled,
+                                    onCheckedChange = { enabled ->
+                                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                            // 无 overlay 权限，引导用户去系统设置授权
+                                            val intent = Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                            overlayPermissionLauncher.launch(intent)
+                                            return@Switch
+                                        }
+                                        vm.updateSettings(
+                                            settings.copy(
+                                                proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                                                    floatingBubbleEnabled = enabled
+                                                )
+                                            )
+                                        )
+                                        if (!enabled) {
+                                            me.rerere.rikkahub.data.service.FloatingBubbleService.dismiss(context)
+                                        }
+                                    }
+                                )
                             }
                         )
                     }

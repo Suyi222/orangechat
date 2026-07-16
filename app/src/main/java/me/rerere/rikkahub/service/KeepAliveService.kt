@@ -118,7 +118,28 @@ class KeepAliveService : Service() {
             .build()
 
         // 启动前台服务
-        startForeground(NOTIFICATION_ID, notification)
+        // Android 14+ 对 dataSync 类型前台服务有每 24 小时 6 小时的累计配额限制，
+        // 配额耗尽时 startForeground 会抛 ForegroundServiceStartNotAllowedException。
+        // 这里捕获异常并优雅降级，避免崩溃整个 App。
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "startForeground 失败（可能是 dataSync 前台服务时长配额耗尽），停止保活服务避免崩溃",
+                e
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         return START_STICKY
     }

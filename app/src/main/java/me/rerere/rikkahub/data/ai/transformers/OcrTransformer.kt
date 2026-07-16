@@ -129,7 +129,15 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
                 )
             ),
             params = TextGenerationParams(
-                model = model,
+                // OCR 是受控的内部调用, 必须保证图片被序列化发送。
+                // 本仓库在序列化层(ChatCompletionsAPI.buildMessages)依据 inputModalities 决定是否下发 image_url,
+                // 若用户所选 OCR 模型未被标记 IMAGE 模态(自建模型 / 注册表未收录的视觉模型常见),
+                // 图片会在序列化时被静默剥离, 模型收到空 content, 从而回复 "no visible content" / "no image was provided"。
+                // 这里强制注入 IMAGE 模态, 确保图片一定发送(对齐上游 rikkahub 总是序列化图片的行为);
+                // 若模型确实不支持图片, 会由 API 返回明确错误(已被下方 runCatching 兜底捕获)。
+                model = model.copy(inputModalities = (model.inputModalities + Modality.IMAGE).distinct()),
+                customHeaders = model.customHeaders,
+                customBody = model.customBodies,
             ),
         )
         val content = result.choices[0].message?.toText() ?: "[ERROR, OCR failed]"
