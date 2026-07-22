@@ -32,6 +32,18 @@ jobs:
         with:
           version: latest
 
+      - name: Generate debug keystore
+        run: |
+          keytool -genkeypair \
+            -alias androiddebugkey \
+            -keystore app/debug.keystore \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Android Debug, O=Android, C=US" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+
       - name: Gradle cache
         uses: actions/cache@v4
         with:
