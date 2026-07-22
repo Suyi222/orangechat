@@ -21,6 +21,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       - name: Gradle cache
         uses: actions/cache@v4
         with:
@@ -31,6 +41,7 @@ jobs:
 
       - name: Gradle Build
         run: |
+          cd web-ui && pnpm install && cd ..
           chmod +x gradlew
           ./gradlew assembleDebug
 
