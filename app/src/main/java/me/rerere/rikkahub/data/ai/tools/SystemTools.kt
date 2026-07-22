@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -19,6 +19,8 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.system.createTriggerProactiveMessageTool
+import me.rerere.rikkahub.data.ai.tools.system.createDeskNoteTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.service.AmapService
@@ -58,6 +60,8 @@ sealed class SystemToolOption {
     @Serializable @SerialName("app_switch") data object AppSwitch : SystemToolOption()
     @Serializable @SerialName("app_lock") data object AppLock : SystemToolOption()
     @Serializable @SerialName("fingerprint") data object Fingerprint : SystemToolOption()
+    @Serializable @SerialName("proactive_trigger") data object ProactiveTrigger : SystemToolOption()
+    @Serializable @SerialName("desk_note") data object DeskNote : SystemToolOption()
 }
 
 class SystemTools(private val context: Context, private val settings: Settings) {
@@ -78,8 +82,6 @@ class SystemTools(private val context: Context, private val settings: Settings) 
 
         private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
     }
-
-    // ==================== 位置工具 ====================
 
     val locationTool: Tool by lazy {
         Tool(
@@ -104,14 +106,12 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                 }
                 try {
                     val fetched = DeviceLocationFetcher.fetch(context)
-
                     if (fetched == null) {
                         return@Tool listOf(UIMessagePart.Text(
                             buildJsonObject { put("success", false); put("error", "Unable to get location") }.toString()
                         ))
                     }
                     val loc = fetched.location
-
                     val result = buildJsonObject {
                         put("success", true)
                         put("latitude", loc.latitude)
@@ -120,12 +120,9 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                         put("accuracy", loc.accuracy.toDouble())
                         put("timestamp", loc.time)
                         put("time", dateFormat.format(Date(loc.time)))
-                        // 明确告知 AI 这份数据是不是刚定位到的，避免 AI 把过期缓存当实时位置
                         put("is_fresh", fetched.isFresh)
-
                         val apiKey = settings.systemToolsSetting.amapApiKey
                         var addressResolved = false
-
                         if (apiKey.isNotBlank()) {
                             try {
                                 val amapService = AmapService(apiKey)
@@ -142,7 +139,6 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                                 }
                             } catch (_: Exception) { }
                         }
-
                         if (!addressResolved) {
                             try {
                                 val geocoder = Geocoder(context, Locale.getDefault())
@@ -156,12 +152,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                                     put("city", addr.locality ?: "")
                                     put("district", addr.subLocality ?: "")
                                     put("street", addr.thoroughfare ?: "")
-                                } else {
-                                    put("address", "Unknown address")
-                                }
-                            } catch (e: Exception) {
-                                put("address", "Unknown address (geocoder failed: ${e.message})")
-                            }
+                                } else { put("address", "Unknown address") }
+                            } catch (e: Exception) { put("address", "Unknown address (geocoder failed: ${e.message})") }
                         }
                     }
                     listOf(UIMessagePart.Text(result.toString()))
@@ -172,194 +164,84 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         )
     }
 
-    // ==================== 通知工具 ====================
-
     val notificationsTool: Tool by lazy {
         Tool(
             name = "get_notifications",
-            description = "Get today's notifications from the device. Returns notification titles, content, app names, and timestamps.",
+            description = "Get today's notifications from the device.",
             needsApproval = true,
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {
-                        putJsonObject("limit") {
-                            put("type", "integer")
-                            put("description", "Maximum number of notifications to return (default 20)")
-                        }
+                        putJsonObject("limit") { put("type", "integer"); put("description", "Max notifications (default 20)") }
                     }
                 )
             },
             execute = { args ->
-                val params = args.jsonObject
+                val limit = args.jsonObject["limit"]?.jsonPrimitive?.intOrNull ?: 20
                 try {
-                    val limit = params["limit"]?.jsonPrimitive?.intOrNull ?: 20
                     val notifications = RikkaNotificationListenerService.getTodayNotifications().take(limit)
-
-                    if (notifications.isEmpty()) {
-                        return@Tool listOf(UIMessagePart.Text(
-                            buildJsonObject { put("success", true); put("count", 0); put("message", "No notifications found for today") }.toString()
-                        ))
-                    }
-
-                    val arr = kotlinx.serialization.json.buildJsonArray {
-                        notifications.forEach { notif ->
-                            add(buildJsonObject {
-                                put("app_name", notif.appName)
-                                put("package_name", notif.packageName)
-                                put("title", notif.title)
-                                put("content", notif.content)
-                                put("time", dateFormat.format(Date(notif.timestamp)))
-                                put("category", notif.category ?: "")
-                            })
-                        }
-                    }
-
+                    if (notifications.isEmpty()) return@Tool listOf(UIMessagePart.Text(
+                        buildJsonObject { put("success", true); put("count", 0); put("message", "No notifications found") }.toString()
+                    ))
+                    val arr = buildJsonArray { notifications.forEach { n -> add(buildJsonObject {
+                        put("app_name", n.appName); put("package_name", n.packageName); put("title", n.title)
+                        put("content", n.content); put("time", dateFormat.format(Date(n.timestamp))); put("category", n.category ?: "")
+                    })}}
                     listOf(UIMessagePart.Text(buildJsonObject { put("success", true); put("count", notifications.size); put("notifications", arr) }.toString()))
-                } catch (e: Exception) {
-                    listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "Unknown error") }.toString()))
-                }
+                } catch (e: Exception) { listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "Unknown") }.toString())) }
             }
         )
     }
 
-    // ==================== Supabase 查询工具 ====================
-
     private val supabaseQueryTool by lazy {
         Tool(
             name = "supabase_query",
-            description = "Query data from Supabase tables. Supports two operations: (1) query_recent_messages - get the most recent N rows from a table ordered by created_at descending; (2) search_messages - search rows containing a keyword using case-insensitive matching on the content column.",
+            description = "Query data from Supabase tables.",
             needsApproval = true,
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {
-                        putJsonObject("operation") {
-                            put("type", "string")
-                            put("description", "Operation type: 'query_recent_messages' or 'search_messages'")
-                            putJsonArray("enum") {
-                                add("query_recent_messages")
-                                add("search_messages")
-                            }
-                        }
-                        putJsonObject("table") {
-                            put("type", "string")
-                            put("description", "Table name to query. Common tables: 'chat_messages' (chat history), 'memory_summaries' (diary summaries), 'device_data' (device events). Defaults to 'chat_messages'.")
-                        }
-                        putJsonObject("count") {
-                            put("type", "integer")
-                            put("description", "For query_recent_messages: number of recent rows to return (default 10, max 50)")
-                        }
-                        putJsonObject("keyword") {
-                            put("type", "string")
-                            put("description", "For search_messages: keyword to search in the content column")
-                        }
-                        putJsonObject("limit") {
-                            put("type", "integer")
-                            put("description", "For search_messages: maximum results to return (default 10, max 50)")
-                        }
+                        putJsonObject("operation") { put("type", "string"); put("description", "'query_recent_messages' or 'search_messages'"); putJsonArray("enum") { add("query_recent_messages"); add("search_messages") }}
+                        putJsonObject("table") { put("type", "string"); put("description", "Table name (default: chat_messages)") }
+                        putJsonObject("count") { put("type", "integer"); put("description", "For query: rows to return (default 10, max 50)") }
+                        putJsonObject("keyword") { put("type", "string"); put("description", "For search: keyword") }
+                        putJsonObject("limit") { put("type", "integer"); put("description", "For search: max results (default 10, max 50)") }
                     },
                     required = listOf("operation")
                 )
             },
             execute = { args ->
                 val params = args.jsonObject
-                val operation = params["operation"]?.jsonPrimitive?.contentOrNull
-                    ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                        put("success", false)
-                        put("error", "Missing required parameter 'operation'")
-                    }.toString()))
-
+                val operation = params["operation"]?.jsonPrimitive?.contentOrNull ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "Missing 'operation'") }.toString()))
                 val externalMemories = settings.externalMemories.filter { it.enabled }
-                if (externalMemories.isEmpty()) {
-                    return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                        put("success", false)
-                        put("error", "No enabled external memory configured. Please add a Supabase external memory in settings.")
-                    }.toString()))
-                }
-
+                if (externalMemories.isEmpty()) return@Tool listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "No Supabase configured") }.toString()))
                 val table = params["table"]?.jsonPrimitive?.contentOrNull ?: "chat_messages"
-                val memory = externalMemories.firstOrNull { it.tableName == table || it.summariesTableName == table }
-                    ?: externalMemories.first()
-                val baseUrl = memory.supabaseUrl.trimEnd('/')
-                val apiKey = memory.supabaseKey
-
+                val memory = externalMemories.firstOrNull { it.tableName == table || it.summariesTableName == table } ?: externalMemories.first()
+                val baseUrl = memory.supabaseUrl.trimEnd('/'); val apiKey = memory.supabaseKey
                 try {
                     when (operation) {
                         "query_recent_messages" -> {
                             val count = (params["count"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 50)
                             val url = java.net.URL("$baseUrl/rest/v1/$table?select=*&order=created_at.desc&limit=$count")
-                            val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
-                                requestMethod = "GET"
-                                setRequestProperty("apikey", apiKey)
-                                setRequestProperty("Authorization", "Bearer ${apiKey}")
-                                setRequestProperty("Accept", "application/json")
-                                connectTimeout = 15000
-                                readTimeout = 15000
-                            }
-                            val responseCode = connection.responseCode
-                            val responseText = if (responseCode in 200..299) {
-                                connection.inputStream.bufferedReader().readText()
-                            } else {
-                                connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                            }
-                            listOf(UIMessagePart.Text(buildJsonObject {
-                                put("success", responseCode in 200..299)
-                                put("operation", "query_recent_messages")
-                                put("table", table)
-                                put("count_requested", count)
-                                if (responseCode !in 200..299) put("error", "HTTP $responseCode: $responseText")
-                                else put("data", Json.parseToJsonElement(responseText))
-                            }.toString()))
+                            val conn = (url.openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; setRequestProperty("apikey", apiKey); setRequestProperty("Authorization", "Bearer $apiKey"); setRequestProperty("Accept", "application/json"); connectTimeout = 15000; readTimeout = 15000 }
+                            val code = conn.responseCode
+                            listOf(UIMessagePart.Text(buildJsonObject { put("success", code in 200..299); put("data", if (code in 200..299) Json.parseToJsonElement(conn.inputStream.bufferedReader().readText()) else "HTTP $code") }.toString()))
                         }
                         "search_messages" -> {
-                            val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull
-                                ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                                    put("success", false)
-                                    put("error", "Missing required parameter 'keyword' for search_messages")
-                                }.toString()))
+                            val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "Missing 'keyword'") }.toString()))
                             val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 50)
-                            // Use ilike for case-insensitive search on content column
-                            val encodedKeyword = java.net.URLEncoder.encode("%$keyword%", "UTF-8")
-                            val url = java.net.URL("$baseUrl/rest/v1/$table?select=*&content=ilike.$encodedKeyword&limit=$limit")
-                            val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
-                                requestMethod = "GET"
-                                setRequestProperty("apikey", apiKey)
-                                setRequestProperty("Authorization", "Bearer ${apiKey}")
-                                setRequestProperty("Accept", "application/json")
-                                connectTimeout = 15000
-                                readTimeout = 15000
-                            }
-                            val responseCode = connection.responseCode
-                            val responseText = if (responseCode in 200..299) {
-                                connection.inputStream.bufferedReader().readText()
-                            } else {
-                                connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                            }
-                            listOf(UIMessagePart.Text(buildJsonObject {
-                                put("success", responseCode in 200..299)
-                                put("operation", "search_messages")
-                                put("table", table)
-                                put("keyword", keyword)
-                                put("limit_requested", limit)
-                                if (responseCode !in 200..299) put("error", "HTTP $responseCode: $responseText")
-                                else put("data", Json.parseToJsonElement(responseText))
-                            }.toString()))
+                            val encoded = java.net.URLEncoder.encode("%$keyword%", "UTF-8")
+                            val url = java.net.URL("$baseUrl/rest/v1/$table?select=*&content=ilike.$encoded&limit=$limit")
+                            val conn = (url.openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; setRequestProperty("apikey", apiKey); setRequestProperty("Authorization", "Bearer $apiKey"); setRequestProperty("Accept", "application/json"); connectTimeout = 15000; readTimeout = 15000 }
+                            val code = conn.responseCode
+                            listOf(UIMessagePart.Text(buildJsonObject { put("success", code in 200..299); put("data", if (code in 200..299) Json.parseToJsonElement(conn.inputStream.bufferedReader().readText()) else "HTTP $code") }.toString()))
                         }
-                        else -> listOf(UIMessagePart.Text(buildJsonObject {
-                            put("success", false)
-                            put("error", "Unknown operation: $operation. Use 'query_recent_messages' or 'search_messages'.")
-                        }.toString()))
+                        else -> listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "Unknown operation: $operation") }.toString()))
                     }
-                } catch (e: Exception) {
-                    listOf(UIMessagePart.Text(buildJsonObject {
-                        put("success", false)
-                        put("error", e.message ?: "Unknown error")
-                    }.toString()))
-                }
+                } catch (e: Exception) { listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "Unknown") }.toString())) }
             }
         )
     }
-
-    // ==================== 外部工具实例 ====================
 
     private val appUsageTool by lazy { createAppUsageTool(context) }
     private val exploreNearbyTool by lazy { createExploreNearbyTool(context, settings) }
@@ -370,8 +252,6 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val batteryTool by lazy { createBatteryTool(context) }
     private val musicTool by lazy { createMusicTool(context) }
     private val smsTool by lazy { createSmsTool(context) }
-
-    // 新增工具实例
     private val torchTool by lazy { createTorchTool(context) }
     private val toastTool by lazy { createToastTool(context) }
     private val vibrateTool by lazy { createVibrateTool(context) }
@@ -388,15 +268,11 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val storageInfoTool by lazy { createStorageInfoTool(context) }
     private val appSwitchTool by lazy { createAppSwitchTool(context) }
     private val appLockTool by lazy { createAppLockTool(context) }
-    // 指纹验证: 共用 BiometricPromptActivity.buffer 单例, 保证工具与弹窗 Activity 同一个 buffer
     private val fingerprintTool by lazy {
-        me.rerere.rikkahub.data.ai.tools.local.fingerprintTool(
-            context,
-            me.rerere.rikkahub.ui.activity.BiometricPromptActivity.buffer,
-        )
+        me.rerere.rikkahub.data.ai.tools.local.fingerprintTool(context, me.rerere.rikkahub.ui.activity.BiometricPromptActivity.buffer)
     }
-
-    // ==================== 获取工具列表 ====================
+    private val triggerProactiveMessageTool by lazy { createTriggerProactiveMessageTool(context) }
+    private val deskNoteTool by lazy { createDeskNoteTool(context) }
 
     fun getTools(
         enabledTools: Set<SystemToolOption>,
@@ -419,14 +295,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         if (SystemToolOption.Torch in enabledTools) tools.add(torchTool)
         if (SystemToolOption.Toast in enabledTools) tools.add(toastTool)
         if (SystemToolOption.Vibrate in enabledTools) tools.add(vibrateTool)
-        if (SystemToolOption.Brightness in enabledTools) {
-            tools.add(getBrightnessTool)
-            tools.add(setBrightnessTool)
-        }
-        if (SystemToolOption.Volume in enabledTools) {
-            tools.add(getVolumeTool)
-            tools.add(setVolumeTool)
-        }
+        if (SystemToolOption.Brightness in enabledTools) { tools.add(getBrightnessTool); tools.add(setBrightnessTool) }
+        if (SystemToolOption.Volume in enabledTools) { tools.add(getVolumeTool); tools.add(setVolumeTool) }
         if (SystemToolOption.WifiInfo in enabledTools) tools.add(wifiInfoTool)
         if (SystemToolOption.TelephonyInfo in enabledTools) tools.add(telephonyInfoTool)
         if (SystemToolOption.Share in enabledTools) tools.add(shareTool)
@@ -438,6 +308,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         if (SystemToolOption.AppSwitch in enabledTools) tools.add(appSwitchTool)
         if (SystemToolOption.AppLock in enabledTools) tools.add(appLockTool)
         if (SystemToolOption.Fingerprint in enabledTools) tools.add(fingerprintTool)
+        if (SystemToolOption.ProactiveTrigger in enabledTools) tools.add(triggerProactiveMessageTool)
+        if (SystemToolOption.DeskNote in enabledTools) tools.add(deskNoteTool)
         return tools
     }
 }
