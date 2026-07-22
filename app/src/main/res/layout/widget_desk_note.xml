@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面便签 Widget 布局：半透明圆角卡片 -->
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="10dp"
+    android:background="@drawable/widget_background">
+
+    <TextView
+        android:id="@+id/widget_note_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="🌲 橘瓣在这里陪你"
+        android:textColor="?android:textColorPrimary"
+        android:textSize="13sp"
+        android:maxLines="3"
+        android:ellipsize="end"
+        android:fontFamily="sans-serif" />
+
+</LinearLayout>
