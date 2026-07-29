@@ -197,7 +197,7 @@ class SystemTools(private val context: Context, private val settings: Settings, 
     private val fingerprintTool by lazy { me.rerere.rikkahub.data.ai.tools.local.fingerprintTool(context, me.rerere.rikkahub.ui.activity.BiometricPromptActivity.buffer) }
     private val triggerProactiveMessageTool by lazy { createTriggerProactiveMessageTool(context) }
     private val deskNoteTool by lazy { createDeskNoteTool(context) }
-    private val searchHistoryTool by lazy { createSearchHistoryTool(ftsManager) }
+    private val searchHistoryTool by lazy { createSearchHistoryTool(ftsManager, database) }
 
     fun getTools(enabledTools: Set<SystemToolOption>, recentMessages: List<UIMessage> = emptyList(), filesManager: FilesManager? = null): List<Tool> {
         val t = mutableListOf<Tool>()
