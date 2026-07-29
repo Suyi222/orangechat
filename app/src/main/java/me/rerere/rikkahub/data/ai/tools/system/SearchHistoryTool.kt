@@ -16,16 +16,20 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.putJsonArray
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
+import me.rerere.rikkahub.utils.JsonInstant
 import java.time.LocalDate
 import java.time.ZoneId
 
 /**
  * 历史聊天记录搜索工具 — AI 可检索全部历史消息，突破 44 条上下文限制。
  * 底层使用 SQLite FTS5 + jieba 中文分词，返回带高亮片段的排序结果。
+ * 支持 full_text 模式获取完整消息内容（更耗 token，按需使用）。
  */
-fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
+fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabase?): Tool = Tool(
     name = "search_history",
     description = """
         Search through ALL historical chat messages across all conversations using
@@ -33,8 +37,8 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
         something from the past that is not in the current 44-message window,
         (2) the user asks "do you remember...", (3) you need context from earlier
         in this or other conversations. Returns ranked results with highlighted
-        snippets indicating the conversation title and date. DO NOT use this for
-        information already visible in the current context window.
+        snippets. Use full_text=true to get complete message content (higher token
+        cost, only use when snippet is insufficient).
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -55,26 +59,48 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
                     put("type", "integer")
                     put("description", "Max results to return. Default 10, max 50. Lower = fewer tokens consumed.")
                 }
+                putJsonObject("full_text") {
+                    put("type", "boolean")
+                    put("description", "Return full message content instead of snippets. COSTS MORE TOKENS. Only use when snippet is too brief to understand. Default: false.")
+                }
+                putJsonObject("node_id") {
+                    put("type", "string")
+                    put("description", "Optional: get full text of a specific message by node_id (requires message_id too). Ignores keyword search.")
+                }
+                putJsonObject("message_id") {
+                    put("type", "string")
+                    put("description", "Required when node_id is provided: the message id to fetch full text for.")
+                }
             },
-            required = listOf("keyword")
+            required = listOf()
         )
     },
     execute = { args ->
         val params = args.jsonObject
-        val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull
-            ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                put("success", false)
-                put("error", "keyword is required")
-            }.toString()))
 
-        if (ftsManager == null) {
+        if (ftsManager == null || database == null) {
             return@Tool listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", false)
-                put("error", "Search unavailable: database not initialized. Ask user to restart the app.")
+                put("error", "Search unavailable: database not initialized.")
             }.toString()))
         }
 
+        // 精确消息查询模式：通过 node_id + message_id 取全文
+        val nodeId = params["node_id"]?.jsonPrimitive?.contentOrNull
+        val messageId = params["message_id"]?.jsonPrimitive?.contentOrNull
+        if (nodeId != null && messageId != null) {
+            return@Tool fetchFullMessage(database, nodeId, messageId)
+        }
+
+        // 关键词搜索模式
+        val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull
+            ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "keyword or (node_id + message_id) is required")
+            }.toString()))
+
         val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10).coerceIn(1, 50)
+        val fullText = params["full_text"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
         val dateFrom = params["date_from"]?.jsonPrimitive?.contentOrNull?.let {
             try { LocalDate.parse(it) } catch (_: Exception) { null }
         }
@@ -85,7 +111,6 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
         try {
             var results = ftsManager.search(keyword)
 
-            // 日期过滤（基于会话的 updateAt，非消息级别，粗粒度但有效）
             if (dateFrom != null || dateTo != null) {
                 results = results.filter { r ->
                     val msgDate = r.updateAt.atZone(ZoneId.systemDefault()).toLocalDate()
@@ -107,14 +132,26 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
             val resultJson = buildJsonObject {
                 put("success", true)
                 put("total_found", results.size)
-                put("hint", "Each result shows: conversation title | date | snippet with highlights [...]. Use this to recall past context. Only mention info you can confirm from snippets — don't fabricate details not shown.")
+                put("hint", if (fullText) "Full message content returned. Use this to recall exact context." else "Snippets returned. Use node_id+message_id with full_text=true to get complete message content for any result.")
                 putJsonArray("results") {
                     results.forEach { r ->
-                        add(buildJsonObject {
+                        val item = buildJsonObject {
                             put("conversation", r.title)
                             put("date", r.updateAt.toString().take(10))
-                            put("snippet", r.snippet)
-                        })
+                            put("node_id", r.nodeId)
+                            put("message_id", r.messageId)
+                        }
+                        if (fullText) {
+                            val fullContent = try {
+                                getMessageContent(database, r.nodeId, r.messageId)
+                            } catch (_: Exception) {
+                                r.snippet
+                            }
+                            item.put("content", fullContent)
+                        } else {
+                            item.put("snippet", r.snippet)
+                        }
+                        add(item)
                     }
                 }
             }
@@ -128,3 +165,38 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?): Tool = Tool(
         }
     }
 )
+
+/**
+ * 从数据库读取一条消息的完整文本内容
+ */
+private fun getMessageContent(database: AppDatabase, nodeId: String, messageId: String): String {
+    val entity = database.messageNodeDao().getNodeById(nodeId) ?: return "(message not found)"
+    val messages: List<UIMessage> = try {
+        JsonInstant.decodeFromString(entity.messages)
+    } catch (_: Exception) {
+        return "(failed to parse message)"
+    }
+    val message = messages.find { it.id.toString() == messageId } ?: return "(message not found in node)"
+    val text = message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+    return text.ifBlank { "(empty message)" }
+}
+
+/**
+ * 精确查询一条消息的全文
+ */
+private fun fetchFullMessage(database: AppDatabase, nodeId: String, messageId: String): List<UIMessagePart> {
+    return try {
+        val content = getMessageContent(database, nodeId, messageId)
+        listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", true)
+            put("node_id", nodeId)
+            put("message_id", messageId)
+            put("content", content)
+        }.toString()))
+    } catch (e: Exception) {
+        listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", false)
+            put("error", e.message ?: "Failed to fetch message")
+        }.toString()))
+    }
+}
