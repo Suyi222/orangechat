@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.data.ai.tools.system
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
@@ -91,7 +92,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
         val nodeId = params["node_id"]?.jsonPrimitive?.contentOrNull
         val messageId = params["message_id"]?.jsonPrimitive?.contentOrNull
         if (nodeId != null && messageId != null) {
-            return@Tool fetchFullMessage(db, nodeId, messageId)
+            return@Tool runBlocking { fetchFullMessage(db, nodeId, messageId) }
         }
 
         // 关键词搜索模式
@@ -144,7 +145,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
                             put("message_id", r.messageId)
                             if (fullText) {
                                 val fullContent = try {
-                                    getMessageContent(db, r.nodeId, r.messageId)
+                                    runBlocking { getMessageContent(db, r.nodeId, r.messageId) }
                                 } catch (_: Exception) {
                                     r.snippet
                                 }
