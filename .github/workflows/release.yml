@@ -59,12 +59,19 @@ jobs:
           ./gradlew assembleDebug
 
       - name: Rename APK
-        id: rename
         run: |
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           mkdir -p apk-output
-          cp app/build/outputs/apk/debug/*.apk "apk-output/OrangeChat-v${VERSION}.apk"
+          # 多个 ABI split 会生成多个 APK，cp 到目录再选 universal 的改名
+          cp app/build/outputs/apk/debug/*.apk apk-output/
+          if ls apk-output/*universal*.apk 1>/dev/null 2>&1; then
+            mv apk-output/*universal*.apk "apk-output/OrangeChat-v${VERSION}.apk"
+          else
+            # 没有 universal 就取第一个
+            FIRST=$(ls apk-output/*.apk | head -1)
+            mv "$FIRST" "apk-output/OrangeChat-v${VERSION}.apk"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
