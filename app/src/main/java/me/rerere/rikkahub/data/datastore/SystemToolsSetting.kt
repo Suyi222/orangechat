@@ -65,6 +65,8 @@ data class SystemToolsSetting(
     val proactiveTriggerEnabled: Boolean = false,
     // 📝 桌面便签
     val deskNoteEnabled: Boolean = false,
+    // 🔍 历史聊天搜索
+    val searchHistoryEnabled: Boolean = false,
 ) {
     fun getEnabledOptions(): Set<me.rerere.rikkahub.data.ai.tools.SystemToolOption> {
         val options = mutableSetOf<me.rerere.rikkahub.data.ai.tools.SystemToolOption>()
@@ -97,6 +99,7 @@ data class SystemToolsSetting(
         if (fingerprintEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Fingerprint)
         if (proactiveTriggerEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.ProactiveTrigger)
         if (deskNoteEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.DeskNote)
+        if (searchHistoryEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SearchHistory)
         return options
     }
 }
