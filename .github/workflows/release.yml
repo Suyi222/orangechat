@@ -59,8 +59,10 @@ jobs:
           ./gradlew assembleDebug
 
       - name: Rename APK
+        id: rename
         run: |
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           mkdir -p apk-output
           cp app/build/outputs/apk/debug/*.apk "apk-output/OrangeChat-v${VERSION}.apk"
 
