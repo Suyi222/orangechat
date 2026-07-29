@@ -76,9 +76,11 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
         )
     },
     execute = { args ->
+        val mgr = ftsManager
+        val db = database
         val params = args.jsonObject
 
-        if (ftsManager == null || database == null) {
+        if (mgr == null || db == null) {
             return@Tool listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", false)
                 put("error", "Search unavailable: database not initialized.")
@@ -89,7 +91,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
         val nodeId = params["node_id"]?.jsonPrimitive?.contentOrNull
         val messageId = params["message_id"]?.jsonPrimitive?.contentOrNull
         if (nodeId != null && messageId != null) {
-            return@Tool fetchFullMessage(database, nodeId, messageId)
+            return@Tool fetchFullMessage(db, nodeId, messageId)
         }
 
         // 关键词搜索模式
@@ -109,7 +111,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
         }
 
         try {
-            var results = ftsManager.search(keyword)
+            var results = mgr.search(keyword)
 
             if (dateFrom != null || dateTo != null) {
                 results = results.filter { r ->
@@ -143,7 +145,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
                         }
                         if (fullText) {
                             val fullContent = try {
-                                getMessageContent(database, r.nodeId, r.messageId)
+                                getMessageContent(db, r.nodeId, r.messageId)
                             } catch (_: Exception) {
                                 r.snippet
                             }
@@ -169,7 +171,7 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
 /**
  * 从数据库读取一条消息的完整文本内容
  */
-private fun getMessageContent(database: AppDatabase, nodeId: String, messageId: String): String {
+private suspend fun getMessageContent(database: AppDatabase, nodeId: String, messageId: String): String {
     val entity = database.messageNodeDao().getNodeById(nodeId) ?: return "(message not found)"
     val messages: List<UIMessage> = try {
         JsonInstant.decodeFromString(entity.messages)
@@ -184,7 +186,7 @@ private fun getMessageContent(database: AppDatabase, nodeId: String, messageId: 
 /**
  * 精确查询一条消息的全文
  */
-private fun fetchFullMessage(database: AppDatabase, nodeId: String, messageId: String): List<UIMessagePart> {
+private suspend fun fetchFullMessage(database: AppDatabase, nodeId: String, messageId: String): List<UIMessagePart> {
     return try {
         val content = getMessageContent(database, nodeId, messageId)
         listOf(UIMessagePart.Text(buildJsonObject {
