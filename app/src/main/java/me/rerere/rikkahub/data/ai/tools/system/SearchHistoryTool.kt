@@ -137,23 +137,22 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
                 put("hint", if (fullText) "Full message content returned. Use this to recall exact context." else "Snippets returned. Use node_id+message_id with full_text=true to get complete message content for any result.")
                 putJsonArray("results") {
                     results.forEach { r ->
-                        val item = buildJsonObject {
+                        add(buildJsonObject {
                             put("conversation", r.title)
                             put("date", r.updateAt.toString().take(10))
                             put("node_id", r.nodeId)
                             put("message_id", r.messageId)
-                        }
-                        if (fullText) {
-                            val fullContent = try {
-                                getMessageContent(db, r.nodeId, r.messageId)
-                            } catch (_: Exception) {
-                                r.snippet
+                            if (fullText) {
+                                val fullContent = try {
+                                    getMessageContent(db, r.nodeId, r.messageId)
+                                } catch (_: Exception) {
+                                    r.snippet
+                                }
+                                put("content", fullContent)
+                            } else {
+                                put("snippet", r.snippet)
                             }
-                            item.put("content", fullContent)
-                        } else {
-                            item.put("snippet", r.snippet)
-                        }
-                        add(item)
+                        })
                     }
                 }
             }
