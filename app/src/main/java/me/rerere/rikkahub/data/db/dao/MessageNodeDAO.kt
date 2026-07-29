@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -34,6 +34,12 @@ interface MessageNodeDAO {
      */
     @Query("SELECT * FROM message_node WHERE id IN (:ids)")
     suspend fun getNodesByIds(ids: List<String>): List<MessageNodeEntity>
+
+    /**
+     * 按单个 id 查询一条消息节点，用于 search_history 全文检索。
+     */
+    @Query("SELECT * FROM message_node WHERE id = :nodeId LIMIT 1")
+    suspend fun getNodeById(nodeId: String): MessageNodeEntity?
 
     /**
      * 查某个对话下 node 的总行数。loadMessageNodes 用它提前知道总行数，
