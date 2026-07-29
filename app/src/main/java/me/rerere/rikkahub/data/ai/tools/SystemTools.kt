@@ -20,7 +20,10 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.system.createTriggerProactiveMessageTool
 import me.rerere.rikkahub.data.ai.tools.system.createDeskNoteTool
+import me.rerere.rikkahub.data.ai.tools.system.createSearchHistoryTool
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.service.AmapService
 import me.rerere.rikkahub.data.service.DeviceLocationFetcher
@@ -61,9 +64,12 @@ sealed class SystemToolOption {
     @Serializable @SerialName("fingerprint") data object Fingerprint : SystemToolOption()
     @Serializable @SerialName("proactive_trigger") data object ProactiveTrigger : SystemToolOption()
     @Serializable @SerialName("desk_note") data object DeskNote : SystemToolOption()
+    @Serializable @SerialName("search_history") data object SearchHistory : SystemToolOption()
 }
 
-class SystemTools(private val context: Context, private val settings: Settings) {
+class SystemTools(private val context: Context, private val settings: Settings, database: AppDatabase? = null) {
+
+    private val ftsManager by lazy { database?.let { MessageFtsManager(it) } }
 
     companion object {
         fun hasLocationPermission(context: Context): Boolean =
@@ -191,6 +197,7 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val fingerprintTool by lazy { me.rerere.rikkahub.data.ai.tools.local.fingerprintTool(context, me.rerere.rikkahub.ui.activity.BiometricPromptActivity.buffer) }
     private val triggerProactiveMessageTool by lazy { createTriggerProactiveMessageTool(context) }
     private val deskNoteTool by lazy { createDeskNoteTool(context) }
+    private val searchHistoryTool by lazy { createSearchHistoryTool(ftsManager) }
 
     fun getTools(enabledTools: Set<SystemToolOption>, recentMessages: List<UIMessage> = emptyList(), filesManager: FilesManager? = null): List<Tool> {
         val t = mutableListOf<Tool>()
@@ -224,6 +231,7 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         if (SystemToolOption.Fingerprint in enabledTools) t.add(fingerprintTool)
         if (SystemToolOption.ProactiveTrigger in enabledTools) t.add(triggerProactiveMessageTool)
         if (SystemToolOption.DeskNote in enabledTools) t.add(deskNoteTool)
+        if (SystemToolOption.SearchHistory in enabledTools) t.add(searchHistoryTool)
         return t
     }
 }
