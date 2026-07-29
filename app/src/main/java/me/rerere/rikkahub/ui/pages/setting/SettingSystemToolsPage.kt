@@ -172,6 +172,23 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
             }
             }
 
+            // 🔍 历史聊天搜索
+            item {
+            CardGroup(title = { Text("🔍 历史聊天搜索") }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                item(
+                    leadingContent = { Icon(imageVector = HugeIcons.SmartPhone01, contentDescription = null) },
+                    headlineContent = { Text("启用历史聊天搜索工具") },
+                    supportingContent = { Text("开启后注册 search_history 工具。AI 可检索全部历史聊天记录（2000+ 条），突破 44 条上下文限制。基于 FTS5 + jieba 中文分词，支持按日期过滤") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.searchHistoryEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(searchHistoryEnabled = enabled)) }
+                        )
+                    }
+                )
+            }
+            }
+
             // 后台保活
             item {
             CardGroup(title = { Text("后台保活") }, modifier = Modifier.padding(horizontal = 8.dp)) {
