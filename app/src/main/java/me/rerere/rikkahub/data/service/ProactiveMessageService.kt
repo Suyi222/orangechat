@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -57,6 +57,7 @@ import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
@@ -999,7 +1000,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             // 系统工具（位置、通知、日历、闹钟、相机）
             val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
             if (systemToolsOptions.isNotEmpty()) {
-                val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings)
+                val db = getKoin().get<AppDatabase>()
+                val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings, db)
                 addAll(systemTools.getTools(systemToolsOptions))
             }
 
