@@ -28,6 +28,8 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.service.AmapService
 import me.rerere.rikkahub.data.service.DeviceLocationFetcher
 import me.rerere.rikkahub.data.service.RikkaNotificationListenerService
+import android.util.Log
+import org.koin.core.context.GlobalContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -67,7 +69,16 @@ sealed class SystemToolOption {
     @Serializable @SerialName("search_history") data object SearchHistory : SystemToolOption()
 }
 
-class SystemTools(private val context: Context, private val settings: Settings, database: AppDatabase? = null) {
+class SystemTools(private val context: Context, private val settings: Settings) {
+
+    private val database: AppDatabase? by lazy {
+        try {
+            GlobalContext.get().get<AppDatabase>()
+        } catch (e: Exception) {
+            Log.e("SystemTools", "Failed to get AppDatabase from Koin", e)
+            null
+        }
+    }
 
     private val ftsManager by lazy { database?.let { MessageFtsManager(it) } }
 

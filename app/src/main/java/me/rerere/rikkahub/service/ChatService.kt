@@ -71,8 +71,6 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
-import me.rerere.rikkahub.data.db.AppDatabase
-import org.koin.core.context.GlobalContext
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
@@ -893,8 +891,7 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                         systemToolsOptions.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SupabaseQuery)
                     }
                     if (systemToolsOptions.isNotEmpty()) {
-                        val db = GlobalContext.get().get<AppDatabase>()
-                        val systemTools = SystemTools(context, settings, db)
+                        val systemTools = SystemTools(context, settings)
                         addAll(systemTools.getTools(systemToolsOptions, conversation.currentMessages, filesManager))
                     }
                     addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))

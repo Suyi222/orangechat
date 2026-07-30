@@ -57,7 +57,6 @@ import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
-import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
@@ -1000,8 +999,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             // 系统工具（位置、通知、日历、闹钟、相机）
             val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
             if (systemToolsOptions.isNotEmpty()) {
-                val db = getKoin().get<AppDatabase>()
-                val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings, db)
+                val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings)
                 addAll(systemTools.getTools(systemToolsOptions))
             }
 
