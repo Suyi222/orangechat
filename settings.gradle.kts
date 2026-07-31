@@ -20,7 +20,8 @@ pluginManagement {
     }
 }
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+    // id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+    // 禁用：本地用 JAVA_HOME，不走 foojay 自动下载
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -27,6 +28,7 @@ import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
+import me.rerere.tts.controller.TtsExportStore
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.TextStyle
@@ -320,7 +322,81 @@ class LocalTools(
             }
         )
     }
- 
+
+    val listTtsExportsTool by lazy {
+        Tool(
+            name = "list_tts_exports",
+            description = """
+                List TTS audio files cached in the last 24 hours (text preview, file name, size, format).
+                Use this when the user wants to see, review or pick the speech audio that was read aloud recently.
+            """.trimIndent().replace("\n", " "),
+            parameters = {
+                InputSchema.Obj(properties = buildJsonObject { }, required = emptyList())
+            },
+            execute = {
+                val entries = TtsExportStore.list()
+                val payload = buildJsonObject {
+                    put("success", true)
+                    put("count", entries.size)
+                    put("ttl_hours", 24)
+                    put("entries", buildJsonArray {
+                        entries.forEach { e ->
+                            add(buildJsonObject {
+                                put("id", e.id)
+                                put("text_preview", e.text)
+                                put("file_name", e.fileName)
+                                put("size_bytes", e.sizeBytes)
+                                put("created_at", e.createdAt)
+                                put("format", e.format)
+                            })
+                        }
+                    })
+                }
+                listOf(UIMessagePart.Text(payload.toString()))
+            }
+        )
+    }
+
+    val exportTtsAudioTool by lazy {
+        Tool(
+            name = "export_tts_audio",
+            description = """
+                Copy a cached TTS audio file to the public download directory and return its save path.
+                Parameter id is optional: omit to export the latest audio, or pass an id from list_tts_exports to export a specific one.
+                Use this when the user asks to save, download or keep a speech audio file.
+            """.trimIndent().replace("\n", " "),
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("id", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Cached entry id (optional, from list_tts_exports)")
+                        })
+                    },
+                    required = emptyList()
+                )
+            },
+            execute = {
+                val id = it.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+                val result = TtsExportStore.exportToPublic(context, id)
+                val payload = buildJsonObject {
+                    if (result != null) {
+                        val (entry, path) = result
+                        put("success", true)
+                        put("id", entry.id)
+                        put("text_preview", entry.text)
+                        put("file_name", entry.fileName)
+                        put("saved_to", path)
+                    } else {
+                        put("success", false)
+                        put("error", "No TTS audio cache found. Ask the user to read some text aloud first.")
+                    }
+                }
+                listOf(UIMessagePart.Text(payload.toString()))
+            }
+        )
+    }
+
     val askUserTool by lazy {
         Tool(
             name = "ask_user",
@@ -586,6 +662,8 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.Tts)) {
             tools.add(ttsTool)
+            tools.add(listTtsExportsTool)
+            tools.add(exportTtsAudioTool)
         }
         if (options.contains(LocalToolOption.RequestVoiceCall) && conversationId != null) {
             tools.add(createRequestVoiceCallTool(conversationId))

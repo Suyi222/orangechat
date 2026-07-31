@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -133,6 +133,7 @@ import me.rerere.rikkahub.ui.context.LocalTTSState
 import me.rerere.rikkahub.ui.hooks.CustomTtsState
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.tts.model.PlaybackStatus
+import me.rerere.tts.controller.TtsExportStore
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
@@ -146,6 +147,8 @@ private object ToolNames {
     const val GET_TIME_INFO = "get_time_info"
     const val CLIPBOARD = "clipboard_tool"
     const val TTS = "text_to_speech"
+    const val LIST_TTS_EXPORTS = "list_tts_exports"
+    const val EXPORT_TTS_AUDIO = "export_tts_audio"
     const val ASK_USER = "ask_user"
     const val USE_SKILL = "use_skill"
     const val WRITE_FILES = "write_files"
@@ -179,7 +182,8 @@ private fun getToolIcon(toolName: String, action: String?) = when (toolName) {
     ToolNames.SCRAPE_WEB -> HugeIcons.GlobalSearch
     ToolNames.GET_TIME_INFO -> HugeIcons.Time02
     ToolNames.CLIPBOARD -> HugeIcons.Clipboard
-    ToolNames.TTS -> HugeIcons.VolumeHigh
+    ToolNames.TTS, ToolNames.LIST_TTS_EXPORTS -> HugeIcons.VolumeHigh
+    ToolNames.EXPORT_TTS_AUDIO -> HugeIcons.FileDownload
     ToolNames.ASK_USER -> HugeIcons.BubbleChatQuestion
     ToolNames.USE_SKILL -> HugeIcons.MagicWand01
     ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> HugeIcons.Zip02
@@ -256,6 +260,15 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             "Speaking: $preview"
         }
 
+        ToolNames.LIST_TTS_EXPORTS -> {
+            val count = content?.jsonObject?.get("count")?.jsonPrimitiveOrNull?.contentOrNull?.toIntOrNull() ?: 0
+            if (count > 0) "TTS 音频缓存 ($count)" else "查看 TTS 音频缓存"
+        }
+
+        ToolNames.EXPORT_TTS_AUDIO -> {
+            if (content?.getStringContent("saved_to") != null) "音频已导出" else "导出 TTS 音频"
+        }
+
         ToolNames.USE_SKILL -> {
             val skillName = arguments.getStringContent("name") ?: ""
             val path = arguments.getStringContent("path")
@@ -316,6 +329,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
 
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         ToolNames.TTS -> arguments.getStringContent("text") != null
+        ToolNames.LIST_TTS_EXPORTS, ToolNames.EXPORT_TTS_AUDIO -> tool.isExecuted && content != null
         ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> tool.isExecuted && content != null
         ToolNames.WORKSPACE_READ_FILE -> content.getStringContent("text") != null
         ToolNames.WORKSPACE_WRITE_FILE -> arguments.getStringContent("text") != null
@@ -450,6 +464,21 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                             text = text,
                             onReplay = { scope.launch { eventBus.emit(AppEvent.Speak(text)) } }
                         )
+                    }
+                    if (tool.toolName == ToolNames.LIST_TTS_EXPORTS && content != null) {
+                        TtsExportListCard(content = content)
+                    }
+                    if (tool.toolName == ToolNames.EXPORT_TTS_AUDIO && content != null) {
+                        val saved = content.getStringContent("saved_to")
+                        if (saved != null) {
+                            Text(
+                                text = "已保存: $saved",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                     if ((tool.toolName == ToolNames.ZIP_FILES || tool.toolName == ToolNames.WRITE_FILES) && tool.isExecuted && content != null) {
                         val context = LocalContext.current
@@ -1274,6 +1303,90 @@ private fun TtsVoiceBar(
             modifier = Modifier.width(28.dp),
             textAlign = TextAlign.End
         )
+    }
+}
+
+/**
+ * list_tts_exports 工具卡片：显示 TTS 音频缓存列表，每条可一键保存到文件管理器（SAF）。
+ */
+@Composable
+private fun TtsExportListCard(content: JsonElement?) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val entries = remember(content) {
+        content?.jsonObjectOrNull?.get("entries")?.jsonArray
+            ?.mapNotNull { it.jsonObjectOrNull }
+            ?: emptyList()
+    }
+    if (entries.isEmpty()) return
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        entries.forEach { e ->
+            val id = e.getStringContent("id") ?: return@forEach
+            val fileName = e.getStringContent("file_name") ?: id
+            val textPreview = e.getStringContent("text_preview") ?: ""
+            val sizeBytes = e["size_bytes"]?.jsonPrimitiveOrNull?.contentOrNull?.toLongOrNull() ?: 0L
+            val format = e.getStringContent("format") ?: "wav"
+            val mime = when (format.lowercase()) {
+                "mp3" -> "audio/mpeg"
+                "ogg" -> "audio/ogg"
+                "wav" -> "audio/wav"
+                else -> "audio/*"
+            }
+
+            val saveLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(mime)
+            ) { uri ->
+                uri?.let { dest ->
+                    scope.launch(Dispatchers.IO) {
+                        runCatching {
+                            context.contentResolver.openOutputStream(dest)?.use { out ->
+                                TtsExportStore.openFile(id)?.inputStream()?.use { it.copyTo(out) }
+                            }
+                        }.onFailure { err ->
+                            withContext(Dispatchers.Main) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Export failed: ${err.message}",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = textPreview,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "${sizeBytes / 1024}KB · $format",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
+                    )
+                }
+                FilledTonalIconButton(
+                    onClick = { saveLauncher.launch(fileName) },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.FileDownload,
+                        contentDescription = "Save audio",
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.rerere.tts.model.PlaybackState
 import me.rerere.tts.model.PlaybackStatus
 import me.rerere.tts.model.TTSResponse
@@ -48,6 +49,11 @@ class TtsController(
     private val chunker = TextChunker(maxChunkLength = 160)
     private val synthesizer = TtsSynthesizer(ttsManager)
     private val audio = AudioPlayer(context)
+
+    init {
+        // 初始化 TTS 导出缓存（幂等）
+        TtsExportStore.init(context.applicationContext)
+    }
 
     // Provider & 作业
     private var currentProvider: TTSProviderSetting? = null
@@ -264,6 +270,11 @@ class TtsController(
                         _error.update { e.message ?: "TTS synthesis error" }
                         processedCount++
                         continue
+                    }
+
+                    // 播放前导出到缓存（PCM 自动转 WAV，不影响播放）
+                    withContext(Dispatchers.IO) {
+                        TtsExportStore.save(chunk.text, response.audioData, response.format, response.sampleRate)
                     }
 
                     // 播放
