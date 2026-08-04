@@ -13,6 +13,14 @@
 
 ---
 
+## ✨ 隙光 XiGuang（小园丁的二改）
+
+> **隙光 = 橘瓣（原 rikkahub）的再次二改**，由小园丁 Suyi222 在橘瓣 OrangeChat 的基础上二次二改而来。
+> 传承：RikkaHub（原作者 RE）→ 橘瓣 OrangeChat（sue1231513）→ **隙光**（Suyi222）⭐ 当前
+> 前人的代码、注释、署名原样保留（AGPL v3）。新增功能见 [docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)。
+
+---
+
 <div align="center">
   <img src="docs/img/chat.png" alt="聊天界面" width="140" />
   <img src="docs/img/desktop.png" alt="模型选择" width="440" />

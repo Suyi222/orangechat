@@ -18,6 +18,25 @@
 
 ---
 
+## ✨ 隙光 XiGuang（小园丁的二改）
+
+> **隙光 = 橘瓣（原 rikkahub）的再次二改**，由小园丁 Suyi222 在橘瓣 OrangeChat 的基础上二次二改而来。
+
+```
+RikkaHub（原作者 RE 开源）
+   └── 橘瓣 OrangeChat（sue1231513 二改）
+         └── 隙光（Suyi222 再次二改）⭐ 当前
+```
+
+- **尊重前人**：原作者 RE、橘瓣开发者 sue1231513 的代码、注释、署名全部原样保留（AGPL v3 开源协议）
+- **新增内容**：小园丁自己加的功能与文件，用「隙光」命名
+- **2.3.0 新功能**：🌲 树影下状态系统 · 🕐 随机时间触发器 · 🛡️ 后台工具总开关 · 🔔 工作流主动唤醒卡
+- 📝 更新说明：[docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)
+- 🛠️ 实现文档：[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
+- 🔀 开发分支：`feature/workflow-widget-v2`
+
+---
+
 ## 🍊 为什么做橘瓣
 
 原版 RikkaHub 是一个优秀的 AI 聊天客户端，支持多供应商、MCP 协议、富文本渲染等功能。
