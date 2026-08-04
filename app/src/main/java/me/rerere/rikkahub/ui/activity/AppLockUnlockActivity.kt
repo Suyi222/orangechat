@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -226,7 +226,7 @@ private fun PinUnlockContent(
 
     fun submit(candidate: String) {
         if (!hasPin) {
-            errorMessage = "还没有设置解锁密码,请先让橘瓣设置密码"
+            errorMessage = "还没有设置解锁密码,请先让隙光设置密码"
             return
         }
         if (AppLockStore.verifyPin(context, candidate)) {

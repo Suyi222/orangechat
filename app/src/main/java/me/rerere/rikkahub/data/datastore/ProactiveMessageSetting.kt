@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -26,4 +26,8 @@ data class ProactiveMessageSetting(
     val aggressiveDebounceSeconds: Int = 30,
     // 悬浮球：主动消息到达时以 Telegram 风格悬浮球提醒，点击直接进入聊天页
     val floatingBubbleEnabled: Boolean = false,
+    // 后台工具调用总开关（替代旧白名单）：开启后，主动消息/激进模式中 AI 可自由调用
+    // 全部工具（含 get_location、app_switch 跳屏、get_app_usage 等所有 needsApproval 的工具），
+    // 直接执行不再拦截。默认关闭 = 安全态；开启 = 真·全开，一劳永逸。
+    val allowToolsInProactive: Boolean = false,
 )

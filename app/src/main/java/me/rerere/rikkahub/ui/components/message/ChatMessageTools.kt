@@ -95,6 +95,7 @@ import me.rerere.hugeicons.stroke.Clipboard
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Eraser
+import me.rerere.hugeicons.stroke.Eye
 import me.rerere.hugeicons.stroke.FileAdd
 import me.rerere.hugeicons.stroke.FileEdit
 import me.rerere.hugeicons.stroke.FileView
@@ -148,7 +149,6 @@ private object ToolNames {
     const val CLIPBOARD = "clipboard_tool"
     const val TTS = "text_to_speech"
     const val LIST_TTS_EXPORTS = "list_tts_exports"
-    const val EXPORT_TTS_AUDIO = "export_tts_audio"
     const val ASK_USER = "ask_user"
     const val USE_SKILL = "use_skill"
     const val WRITE_FILES = "write_files"
@@ -183,7 +183,6 @@ private fun getToolIcon(toolName: String, action: String?) = when (toolName) {
     ToolNames.GET_TIME_INFO -> HugeIcons.Time02
     ToolNames.CLIPBOARD -> HugeIcons.Clipboard
     ToolNames.TTS, ToolNames.LIST_TTS_EXPORTS -> HugeIcons.VolumeHigh
-    ToolNames.EXPORT_TTS_AUDIO -> HugeIcons.FileDownload
     ToolNames.ASK_USER -> HugeIcons.BubbleChatQuestion
     ToolNames.USE_SKILL -> HugeIcons.MagicWand01
     ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> HugeIcons.Zip02
@@ -265,10 +264,6 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             if (count > 0) "TTS 音频缓存 ($count)" else "查看 TTS 音频缓存"
         }
 
-        ToolNames.EXPORT_TTS_AUDIO -> {
-            if (content?.getStringContent("saved_to") != null) "音频已导出" else "导出 TTS 音频"
-        }
-
         ToolNames.USE_SKILL -> {
             val skillName = arguments.getStringContent("name") ?: ""
             val path = arguments.getStringContent("path")
@@ -329,7 +324,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
 
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         ToolNames.TTS -> arguments.getStringContent("text") != null
-        ToolNames.LIST_TTS_EXPORTS, ToolNames.EXPORT_TTS_AUDIO -> tool.isExecuted && content != null
+        ToolNames.LIST_TTS_EXPORTS -> tool.isExecuted && content != null
         ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> tool.isExecuted && content != null
         ToolNames.WORKSPACE_READ_FILE -> content.getStringContent("text") != null
         ToolNames.WORKSPACE_WRITE_FILE -> arguments.getStringContent("text") != null
@@ -365,41 +360,53 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                 overflow = TextOverflow.Ellipsis,
             )
         },
-        extra = if (isPending && onToolApproval != null) {
-            {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    FilledTonalIconButton(
-                        onClick = { showDenyDialog = true },
-                        modifier = Modifier.size(28.dp),
+        extra = when {
+            isPending && onToolApproval != null -> {
+                {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Icon(
-                            imageVector = HugeIcons.Cancel01,
-                            contentDescription = stringResource(R.string.chat_message_tool_deny),
-                            modifier = Modifier.size(14.dp)
-                        )
+                        FilledTonalIconButton(
+                            onClick = { showDenyDialog = true },
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.Cancel01,
+                                contentDescription = stringResource(R.string.chat_message_tool_deny),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        FilledTonalIconButton(
+                            onClick = { onToolApproval(tool.toolCallId, true, "") },
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.Tick01,
+                                contentDescription = stringResource(R.string.chat_message_tool_approve),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
+                }
+            }
+            // 已执行且有结果：详情按钮收在 extra，行点击让位给折叠
+            tool.isExecuted && content != null -> {
+                {
                     FilledTonalIconButton(
-                        onClick = { onToolApproval(tool.toolCallId, true, "") },
+                        onClick = { showResult = true },
                         modifier = Modifier.size(28.dp),
                     ) {
                         Icon(
-                            imageVector = HugeIcons.Tick01,
-                            contentDescription = stringResource(R.string.chat_message_tool_approve),
+                            imageVector = HugeIcons.Eye,
+                            contentDescription = "查看详情",
                             modifier = Modifier.size(14.dp)
                         )
                     }
                 }
             }
-        } else {
-            null
+            else -> null
         },
-        onClick = if (content != null || isPending || images.isNotEmpty() || audios.isNotEmpty() ||
-            tool.toolName == ToolNames.WORKSPACE_EDIT_FILE ||
-            tool.toolName == ToolNames.WORKSPACE_WRITE_FILE ||
-            tool.toolName == ToolNames.WORKSPACE_READ_FILE
-        ) {
+        onClick = if (isPending || images.isNotEmpty() || audios.isNotEmpty()) {
             { showResult = true }
         } else {
             null
@@ -467,18 +474,6 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                     }
                     if (tool.toolName == ToolNames.LIST_TTS_EXPORTS && content != null) {
                         TtsExportListCard(content = content)
-                    }
-                    if (tool.toolName == ToolNames.EXPORT_TTS_AUDIO && content != null) {
-                        val saved = content.getStringContent("saved_to")
-                        if (saved != null) {
-                            Text(
-                                text = "已保存: $saved",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
                     }
                     if ((tool.toolName == ToolNames.ZIP_FILES || tool.toolName == ToolNames.WRITE_FILES) && tool.isExecuted && content != null) {
                         val context = LocalContext.current

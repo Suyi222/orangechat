@@ -68,6 +68,39 @@ object TtsExportStore {
 
     // ========== 写入 ==========
 
+    /**
+     * 合并保存一次完整朗读的多段 PCM。
+     * 将各分段 PCM 按顺序拼接后统一加 WAV 头写入一个文件（一次朗读 = 一个完整音频）。
+     * 仅适用于 PCM；非 PCM 分段请走 [save] 逐段保存。失败返回 null。
+     */
+    fun saveMergedPcm(text: String, pcmParts: List<ByteArray>, sampleRate: Int): TtsExportEntry? {
+        val d = dir()
+        return try {
+            synchronized(lock) { cleanupLocked() }
+            val merged = ByteArrayOutputStream()
+            pcmParts.forEach { merged.write(it) }
+            val wav = pcmToWav(merged.toByteArray(), sampleRate)
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.ROOT).format(Date())
+            val fileName = "tts_$stamp.wav"
+            val file = File(d, fileName)
+            file.writeBytes(wav)
+            val entry = TtsExportEntry(
+                id = fileName,
+                text = text.take(200),
+                fileName = fileName,
+                sizeBytes = wav.size.toLong(),
+                createdAt = System.currentTimeMillis(),
+                format = "wav"
+            )
+            synchronized(lock) { appendIndexLocked(entry) }
+            Log.i(TAG, "saved merged ${file.absolutePath} (${wav.size} bytes, ${pcmParts.size} parts)")
+            entry
+        } catch (e: Exception) {
+            Log.e(TAG, "saveMergedPcm failed", e)
+            null
+        }
+    }
+
     /** 保存一段 TTS 音频。PCM 转 WAV，其余格式原样。失败返回 null。 */
     fun save(text: String, audioData: ByteArray, format: AudioFormat, sampleRate: Int?): TtsExportEntry? {
         val d = dir()

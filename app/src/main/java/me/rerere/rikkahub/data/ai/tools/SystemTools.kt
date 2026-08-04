@@ -21,6 +21,11 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.system.createTriggerProactiveMessageTool
 import me.rerere.rikkahub.data.ai.tools.system.createDeskNoteTool
 import me.rerere.rikkahub.data.ai.tools.system.createSearchHistoryTool
+import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateWriteTool
+import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateReadTool
+import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateEchoReadTool
+import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateArchiveTool
+import me.rerere.rikkahub.data.service.TreeShadowService
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
@@ -28,6 +33,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.service.AmapService
 import me.rerere.rikkahub.data.service.DeviceLocationFetcher
 import me.rerere.rikkahub.data.service.RikkaNotificationListenerService
+import me.rerere.tts.controller.TtsExportStore
 import android.util.Log
 import org.koin.core.context.GlobalContext
 import java.text.SimpleDateFormat
@@ -67,6 +73,8 @@ sealed class SystemToolOption {
     @Serializable @SerialName("proactive_trigger") data object ProactiveTrigger : SystemToolOption()
     @Serializable @SerialName("desk_note") data object DeskNote : SystemToolOption()
     @Serializable @SerialName("search_history") data object SearchHistory : SystemToolOption()
+    @Serializable @SerialName("tts_exports") data object TtsExports : SystemToolOption()
+    @Serializable @SerialName("tree_shadow") data object TreeShadow : SystemToolOption()
 }
 
 class SystemTools(private val context: Context, private val settings: Settings) {
@@ -81,6 +89,15 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     }
 
     private val ftsManager by lazy { database?.let { MessageFtsManager(it) } }
+
+    private val treeShadowService: TreeShadowService? by lazy {
+        try {
+            GlobalContext.get().get<TreeShadowService>()
+        } catch (e: Exception) {
+            Log.e("SystemTools", "Failed to get TreeShadowService from Koin", e)
+            null
+        }
+    }
 
     companion object {
         fun hasLocationPermission(context: Context): Boolean =
@@ -209,6 +226,41 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val triggerProactiveMessageTool by lazy { createTriggerProactiveMessageTool(context) }
     private val deskNoteTool by lazy { createDeskNoteTool(context) }
     private val searchHistoryTool by lazy { createSearchHistoryTool(ftsManager, database) }
+    private val stateWriteTool by lazy { treeShadowService?.let { createStateWriteTool(it) } }
+    private val stateReadTool by lazy { treeShadowService?.let { createStateReadTool(it) } }
+    private val stateEchoReadTool by lazy { treeShadowService?.let { createStateEchoReadTool(it) } }
+    private val stateArchiveTool by lazy { treeShadowService?.let { createStateArchiveTool(it) } }
+    private val listTtsExportsTool by lazy {
+        Tool(
+            name = "list_tts_exports",
+            description = """
+                List TTS audio files cached in the last 24 hours (text preview, file name, size, format).
+                Use this when the user wants to see, review or pick the speech audio that was read aloud recently.
+            """.trimIndent().replace("\n", " "),
+            parameters = { InputSchema.Obj(properties = buildJsonObject { }, required = emptyList()) },
+            execute = {
+                val entries = TtsExportStore.list()
+                val payload = buildJsonObject {
+                    put("success", true)
+                    put("count", entries.size)
+                    put("ttl_hours", 24)
+                    put("entries", buildJsonArray {
+                        entries.forEach { e ->
+                            add(buildJsonObject {
+                                put("id", e.id)
+                                put("text_preview", e.text)
+                                put("file_name", e.fileName)
+                                put("size_bytes", e.sizeBytes)
+                                put("created_at", e.createdAt)
+                                put("format", e.format)
+                            })
+                        }
+                    })
+                }
+                listOf(UIMessagePart.Text(payload.toString()))
+            }
+        )
+    }
 
     fun getTools(enabledTools: Set<SystemToolOption>, recentMessages: List<UIMessage> = emptyList(), filesManager: FilesManager? = null): List<Tool> {
         val t = mutableListOf<Tool>()
@@ -243,6 +295,13 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         if (SystemToolOption.ProactiveTrigger in enabledTools) t.add(triggerProactiveMessageTool)
         if (SystemToolOption.DeskNote in enabledTools) t.add(deskNoteTool)
         if (SystemToolOption.SearchHistory in enabledTools) t.add(searchHistoryTool)
+        if (SystemToolOption.TtsExports in enabledTools) t.add(listTtsExportsTool)
+        if (SystemToolOption.TreeShadow in enabledTools) {
+            stateWriteTool?.let { t.add(it) }
+            stateReadTool?.let { t.add(it) }
+            stateEchoReadTool?.let { t.add(it) }
+            stateArchiveTool?.let { t.add(it) }
+        }
         return t
     }
 }

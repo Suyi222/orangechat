@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 隙光 Logo（导出对话等场景使用），直接复用前景层矢量 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/xi_guang_launcher_fg" />
+</layer-list>

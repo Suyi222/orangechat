@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -62,4 +62,33 @@ internal suspend fun buildRecentChatsPrompt(
         }
     }
     return ""
+}
+
+/**
+ * 「树影下」状态注入（决策 10/16）
+ * 状态卡 + 时间线全文拼在工具提示之后；备注为空不注入；今天无任何记录则返回空串。
+ */
+internal suspend fun buildStatePrompt(service: me.rerere.rikkahub.data.service.TreeShadowService): String {
+    val today = me.rerere.rikkahub.data.service.TreeShadowService.today()
+    val card = service.getActiveStateCard(today)
+    val timeline = service.getActiveTimeline(today)
+    if (card == null && timeline.isEmpty()) return ""
+    val timeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+    return buildString {
+        appendLine()
+        appendLine("## 树影下 · 今日状态")
+        if (card != null && card.content.isNotBlank()) {
+            appendLine("【状态卡】${card.content}")
+        }
+        // 备注有内容才注入，不占 token（决策 16）
+        if (card != null && !card.note.isNullOrBlank()) {
+            appendLine("【备注】${card.note}")
+        }
+        if (timeline.isNotEmpty()) {
+            appendLine("【时间线】")
+            timeline.forEach { entry ->
+                appendLine("- ${timeFormat.format(java.util.Date(entry.createdAt))} ${entry.content}")
+            }
+        }
+    }
 }

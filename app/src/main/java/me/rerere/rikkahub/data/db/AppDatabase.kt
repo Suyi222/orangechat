@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -32,12 +32,14 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.SshHostEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.db.dao.SshHostDao
+import me.rerere.rikkahub.data.db.dao.TreeShadowDao
 import me.rerere.rikkahub.data.security.SecurityAuditDao
 import me.rerere.rikkahub.data.security.SecurityAuditEntity
 import me.rerere.rikkahub.workflow.db.WorkflowDao
 import me.rerere.rikkahub.workflow.db.WorkflowEntity
 import me.rerere.rikkahub.workflow.db.WorkflowRunDao
 import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
+import me.rerere.rikkahub.data.db.entity.TreeShadowEntry
 import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_24_25
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
@@ -58,8 +60,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         WorkflowRunEntity::class,
         SshHostEntity::class,
         SecurityAuditEntity::class,
+        TreeShadowEntry::class,
     ],
-    version = 29,
+    version = 30,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -78,6 +81,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         AutoMigration(from = 26, to = 27),
         AutoMigration(from = 27, to = 28),
         AutoMigration(from = 28, to = 29),
+        AutoMigration(from = 29, to = 30),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)
@@ -107,6 +111,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun sshHostDao(): SshHostDao
 
     abstract fun securityAuditDao(): SecurityAuditDao
+
+    abstract fun treeShadowDao(): TreeShadowDao
 }
 
 object TokenUsageConverter {

@@ -17,7 +17,7 @@ import me.rerere.rikkahub.RouteActivity
 
 /**
  * 桌面便签 Widget — AI 可在桌面 Widget 写/删提醒。
- * 用户长按桌面 → 小部件 → 「橘瓣·桌面便签」拖到桌面。
+ * 用户长按桌面 → 小部件 → 「隙光·桌面便签」拖到桌面。
  */
 class DeskNoteWidgetProvider : AppWidgetProvider() {
 
@@ -25,7 +25,7 @@ class DeskNoteWidgetProvider : AppWidgetProvider() {
         const val PREFS_NAME = "desk_note_widget_prefs"
         const val KEY_NOTE_CONTENT = "note_content"
         const val KEY_NOTE_EXPIRE_AT = "note_expire_at"
-        private const val DEFAULT_TEXT = "🌲 橘瓣在这里陪你"
+        private const val DEFAULT_TEXT = "🌲 隙光在这里陪你"
 
         fun updateWidgets(context: Context, appWidgetManager: AppWidgetManager, widgetIds: IntArray) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

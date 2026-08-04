@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.rerere.tts.model.AudioFormat
 import me.rerere.tts.model.PlaybackState
 import me.rerere.tts.model.PlaybackStatus
 import me.rerere.tts.model.TTSResponse
@@ -240,6 +241,20 @@ class TtsController(
         workerJob = scope.launch {
             _isSpeaking.update { true }
             var processedCount = _currentChunk.value
+
+            // 合并导出缓冲：一次朗读 = 一个完整 PCM（队列耗尽时一次性写入）
+            var mergedParts: MutableList<ByteArray>? = null
+            var mergedText = StringBuilder()
+            var mergedSampleRate = 24000
+
+            fun flushMerged() {
+                val parts = mergedParts ?: return
+                if (parts.isEmpty()) return
+                TtsExportStore.saveMergedPcm(mergedText.toString(), parts, mergedSampleRate)
+                mergedParts = null
+                mergedText = StringBuilder()
+            }
+
             try {
                 while (isActive) {
                     if (isPaused) {
@@ -247,7 +262,10 @@ class TtsController(
                         continue
                     }
 
-                    val chunk = queue.poll() ?: break
+                    val chunk = queue.poll() ?: run {
+                        withContext(Dispatchers.IO) { flushMerged() }
+                        break
+                    }
 
                     // 更新状态（1-based）
                     _currentChunk.update { processedCount + 1 }
@@ -272,9 +290,24 @@ class TtsController(
                         continue
                     }
 
-                    // 播放前导出到缓存（PCM 自动转 WAV，不影响播放）
+                    // 播放前导出到缓存：PCM 累积合并、非 PCM 立即逐段保存
                     withContext(Dispatchers.IO) {
-                        TtsExportStore.save(chunk.text, response.audioData, response.format, response.sampleRate)
+                        if (response.format == AudioFormat.PCM) {
+                            if (mergedParts == null) {
+                                mergedParts = mutableListOf()
+                                mergedText = StringBuilder()
+                                mergedSampleRate = response.sampleRate ?: 24000
+                            }
+                            mergedParts!!.add(response.audioData)
+                            if (mergedText.isEmpty()) {
+                                mergedText.append(chunk.text)
+                            } else {
+                                mergedText.append('\n').append(chunk.text)
+                            }
+                        } else {
+                            flushMerged()
+                            TtsExportStore.save(chunk.text, response.audioData, response.format, response.sampleRate)
+                        }
                     }
 
                     // 播放
@@ -286,7 +319,12 @@ class TtsController(
                         _error.update { e.message ?: "Audio playback error" }
                     }
 
-                    if (queue.isNotEmpty()) delay(chunkDelayMs)
+                    if (queue.isEmpty()) {
+                        // 本次朗读结束，刷出合并缓冲
+                        withContext(Dispatchers.IO) { flushMerged() }
+                    } else {
+                        delay(chunkDelayMs)
+                    }
 
                     processedCount++
                 }

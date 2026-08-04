@@ -51,6 +51,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.TreeShadowService
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.ToolApprovalState
@@ -169,6 +170,30 @@ class ChatService(
     private val memoryBankService: MemoryBankService,
     private val folderRepository: FolderRepository,
 ) {
+    // 树影下状态服务（Koin 懒取，避免构造器改动过大）
+    private val treeShadowService: TreeShadowService? by lazy {
+        try {
+            org.koin.core.context.GlobalContext.get().get<TreeShadowService>()
+        } catch (e: Exception) {
+            Log.w(TAG, "TreeShadowService not available", e)
+            null
+        }
+    }
+
+    // 段落总结防并发标志
+    @Volatile
+    private var segmentSummaryRunning = false
+
+    private companion object {
+        const val TREE_SHADOW_PREFS = "tree_shadow_prefs"
+        const val KEY_LAST_ACTIVE_DATE = "last_active_date"
+        const val KEY_LAST_USER_MSG_AT = "last_user_msg_at"
+        // 段落闲置阈值（决策 9：默认 15 分钟）
+        const val SEGMENT_IDLE_THRESHOLD_MS = 15 * 60 * 1000L
+    }
+
+    private fun treeShadowPrefs() =
+        context.getSharedPreferences(TREE_SHADOW_PREFS, Context.MODE_PRIVATE)
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
 
@@ -414,6 +439,22 @@ class ChatService(
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("ChatService", "Failed to reset proactive timer", e)
+                }
+
+                // 树影下：跨天兜底归档 + 自动段落记录（决策 9/13，总开关关闭则不执行）
+                if (settings.systemToolsSetting.treeShadowEnabled) {
+                    runCatching {
+                        val prefs = treeShadowPrefs()
+                        // 保险三：上次活跃日期不是今天 → 把旧日归档
+                        prefs.getString(KEY_LAST_ACTIVE_DATE, null)?.let { lastDate ->
+                            treeShadowService?.maybeAutoArchive(lastDate)
+                        }
+                        prefs.edit().putString(KEY_LAST_ACTIVE_DATE, TreeShadowService.today()).apply()
+                        // 段落判定：闲置超过阈值 → 上一段结束 → 轻量总结写入时间线
+                        maybeSegmentSummary(conversationId)
+                    }.onFailure { e ->
+                        Log.w(TAG, "TreeShadow auto record failed, conversationId=$conversationId", e)
+                    }
                 }
 
                 // 读取最新状态 -> 追加用户消息 -> 落库，整体加锁。
@@ -1162,6 +1203,61 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
             ),
             approvalState = ToolApprovalState.Denied("Generation cancelled by user")
         )
+    }
+
+    // ---- 树影下：自动段落记录（决策 9） ----
+
+    /**
+     * 段落判定：距上次用户消息闲置超过阈值 → 上一段结束 → 轻量总结写入时间线。
+     * 异步执行，不阻塞发消息主流程。
+     */
+    private fun maybeSegmentSummary(conversationId: Uuid) {
+        val prefs = treeShadowPrefs()
+        val now = System.currentTimeMillis()
+        val lastAt = prefs.getLong(KEY_LAST_USER_MSG_AT, 0L)
+        prefs.edit().putLong(KEY_LAST_USER_MSG_AT, now).apply()
+        // 首次使用（无历史）或闲置未超阈值 → 不总结
+        if (lastAt <= 0 || now - lastAt < SEGMENT_IDLE_THRESHOLD_MS) return
+        if (segmentSummaryRunning) return
+        segmentSummaryRunning = true
+        appScope.launch {
+            try {
+                summarizeSegment(conversationId)
+            } catch (e: Exception) {
+                Log.w(TAG, "TreeShadow segment summary failed, conversationId=$conversationId", e)
+            } finally {
+                segmentSummaryRunning = false
+            }
+        }
+    }
+
+    /** 对最近一段对话做轻量总结（约每天 5~10 次），写入今天的时间线 */
+    private suspend fun summarizeSegment(conversationId: Uuid) {
+        val settings = settingsStore.settingsFlow.first()
+        val model = settings.findModelById(settings.compressModelId)
+            ?: settings.getCurrentChatModel()
+            ?: return
+        val provider = model.findProvider(settings.providers) ?: return
+        val providerHandler = providerManager.getProviderByType(provider)
+        val conversation = conversationRepo.getConversationById(conversationId) ?: return
+        val recent = conversation.currentMessages.takeLast(12)
+        if (recent.isEmpty()) return
+        val content = recent.joinToString("\n\n") { it.summaryAsText() }
+        val prompt = "你是「树影下」的温柔观察者。请用一句温柔的话总结最近这段对话里小园丁发生的重要事件和当前状态，30 字以内，直接输出总结，不要任何前缀、引号或装饰。\n\n对话内容：\n$content"
+        val result = providerHandler.generateText(
+            providerSetting = provider,
+            messages = listOf(UIMessage.user(prompt)),
+            params = TextGenerationParams(
+                model = model,
+                reasoningLevel = ReasoningLevel.OFF,
+                temperature = 0.8f,
+                maxTokens = 100,
+            ),
+        )
+        val summary = result.choices[0].message?.toText()?.trim().orEmpty()
+        if (summary.isBlank() || summary.length > 200) return
+        treeShadowService?.appendTimeline(TreeShadowService.today(), summary)
+        Log.i(TAG, "TreeShadow segment summary appended: $summary")
     }
 
     // ---- 生成标题 ----

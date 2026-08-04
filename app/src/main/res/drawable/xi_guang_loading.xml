@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 隙光 · 消息生成加载动画（替代原兔子眨眼动画）
+     视觉：叶子轮廓（微光呼吸）+ 缝隙光点（呼吸放大）+ 光晕（脉动扩散） -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:aapt="http://schemas.android.com/aapt">
+
+  <!-- 静态矢量图形：叶子 + 光晕 + 光点 -->
+  <aapt:attr name="android:drawable">
+    <vector
+      android:width="24dp"
+      android:height="24dp"
+      android:viewportWidth="24"
+      android:viewportHeight="24">
+
+      <!-- 光晕（脉动扩散的微光，低透明度） -->
+      <group
+        android:name="glow_group"
+        android:pivotX="12"
+        android:pivotY="12">
+        <path
+          android:fillColor="#282828"
+          android:fillAlpha="0.12"
+          android:pathData="M12,9 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 Z" />
+      </group>
+
+      <!-- 叶子轮廓（描边） -->
+      <path
+        android:name="leaf_path"
+        android:strokeColor="#282828"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:pathData="M12,2 C7,7 4,11 4,15 C4,19 7,22 12,22 C17,22 20,19 20,15 C20,11 17,7 12,2 Z" />
+
+      <!-- 叶柄 -->
+      <path
+        android:strokeColor="#282828"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M12,21.6 L12,23.4" />
+
+      <!-- 主叶脉：中间断开形成缝隙 -->
+      <path
+        android:strokeColor="#282828"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M12,4 L12,10" />
+      <path
+        android:strokeColor="#282828"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M12,14 L12,20" />
+
+      <!-- 缝隙中的光点（呼吸） -->
+      <group
+        android:name="light_group"
+        android:pivotX="12"
+        android:pivotY="12">
+        <path
+          android:fillColor="#282828"
+          android:pathData="M12,10.8 a1.2,1.2 0 1,0 2.4,0 a1.2,1.2 0 1,0 -2.4,0 Z" />
+      </group>
+    </vector>
+  </aapt:attr>
+
+  <!-- 光晕脉动扩散（scale 1→2.3 + 透明度明显升高） -->
+  <target android:name="glow_group">
+    <aapt:attr name="android:animation">
+      <set android:ordering="together">
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="scaleX"
+          android:valueFrom="1"
+          android:valueTo="2.3" />
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="scaleY"
+          android:valueFrom="1"
+          android:valueTo="2.3" />
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="alpha"
+          android:valueFrom="0.15"
+          android:valueTo="0.45" />
+      </set>
+    </aapt:attr>
+  </target>
+
+  <!-- 光点呼吸（scale 0.6→1.5 + 透明度 0.3→1） -->
+  <target android:name="light_group">
+    <aapt:attr name="android:animation">
+      <set android:ordering="together">
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="scaleX"
+          android:valueFrom="0.6"
+          android:valueTo="1.5" />
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="scaleY"
+          android:valueFrom="0.6"
+          android:valueTo="1.5" />
+        <objectAnimator
+          android:duration="1200"
+          android:repeatCount="infinite"
+          android:repeatMode="reverse"
+          android:propertyName="alpha"
+          android:valueFrom="0.3"
+          android:valueTo="1" />
+      </set>
+    </aapt:attr>
+  </target>
+
+  <!-- 叶子轮廓闪烁（描边透明度 0.35→1，呼吸更明显） -->
+  <target android:name="leaf_path">
+    <aapt:attr name="android:animation">
+      <objectAnimator
+        android:duration="1200"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:propertyName="strokeAlpha"
+        android:valueFrom="0.35"
+        android:valueTo="1" />
+    </aapt:attr>
+  </target>
+</animated-vector>

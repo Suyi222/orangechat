@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -164,6 +164,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingWeixinBotPage
 import me.rerere.rikkahub.ui.pages.setting.SettingQqBotPage
 import me.rerere.rikkahub.plugin.webview.PluginWebViewPage
 import me.rerere.rikkahub.ui.pages.memory.MemoryBankPage
+import me.rerere.rikkahub.ui.pages.treeshadow.TreeShadowPage
 import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
@@ -778,6 +779,12 @@ entry<Screen.Extensions> {
                                 )
                             }
 
+                            entry<Screen.TreeShadow> {
+                                TreeShadowPage(
+                                    onBack = { backStack.removeLastOrNull() }
+                                )
+                            }
+
                             entry<Screen.EmojiPicker> {
                                 EmojiPickerPage(
                                     onBack = { backStack.removeLastOrNull() }
@@ -1104,6 +1111,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object MemoryBank : Screen
+
+    @Serializable
+    data object TreeShadow : Screen
 
     @Serializable
     data object EmojiPicker : Screen

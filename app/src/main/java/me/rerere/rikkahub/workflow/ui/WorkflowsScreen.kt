@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -190,6 +190,8 @@ internal fun oneLineTriggerSummary(def: WorkflowDefinition): String = when (val 
     is TriggerSpec.BootCompleted -> "设备开机"
     is TriggerSpec.ScreenOn -> "屏幕点亮"
     is TriggerSpec.ScreenOff -> "屏幕熄灭"
+    is TriggerSpec.RandomTimeBetween -> "随机 ${t.start}-${t.end}" +
+        "（最多 ${t.maxTriggersPerDay} 次/天）"
     is TriggerSpec.Manual -> "仅手动运行"
 }
 

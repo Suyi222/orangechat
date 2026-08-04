@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -42,6 +42,7 @@ import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.ProactiveMessageWorker
 import org.koin.compose.koinInject
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
@@ -324,6 +325,31 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             },
                         )
                     }
+                }
+            }
+            // 后台工具调用总开关（决策 19：真·全开，替代旧白名单）
+            item {
+                CardGroup {
+                    item(
+                        headlineContent = { Text("允许 AI 在后台调用工具") },
+                        supportingContent = {
+                            Text("开启后，主动消息 / 激进模式中 AI 可自由调用全部工具（包括获取位置、切换屏幕、读取通知等需要审批的工具），直接执行，不再逐个拦截。\n\n注意：这会让 AI 在后台拥有较高操作权限，仅在你信任 AI 判断时开启。")
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.allowToolsInProactive,
+                                onCheckedChange = { enabled ->
+                                    vm.updateSettings(
+                                        settings.copy(
+                                            proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                                                allowToolsInProactive = enabled
+                                            )
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                    )
                 }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

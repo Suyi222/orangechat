@@ -3,7 +3,7 @@ setlocal
 set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
 set "PATH=%JAVA_HOME%\bin;%PATH%"
 set "ADB=C:\Users\ASUS\AppData\Local\Android\Sdk\platform-tools\adb.exe"
-set "PKG=me.rerere.orangechat.debug"
+set "PKG=xiguang.orangechat.debug"
 set "APK=app\build\outputs\apk\debug\app-arm64-v8a-debug.apk"
 
 echo === Build Debug APK ===

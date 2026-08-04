@@ -49,15 +49,19 @@ fun createTriggerProactiveMessageTool(context: Context): Tool = Tool(
         val message = params["message"]?.jsonPrimitive?.contentOrNull ?: error("message is required")
         val includeUsage = params["include_usage"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
 
+        // 唤醒卡：醒因 + 要做什么，注入 AI 上下文顶部，让 AI 明确知道自己是"被工作流主动唤醒"的
         val ctx = StringBuilder()
-        ctx.appendLine("[工作流主动唤醒]")
-        ctx.appendLine("触发原因: $message")
+        ctx.appendLine("【醒因】你是被工作流主动唤醒的（不是定时提醒，也不是用户主动找你）。")
+        ctx.appendLine("【要做什么】$message")
         if (includeUsage) ctx.appendLine("（设备使用数据将自动附加）")
         ctx.appendLine()
-        ctx.appendLine("重要规则：根据上述触发原因以自然语气对用户说话，不提及技术细节。")
+        ctx.appendLine("重要规则：根据上述醒因与要做什么，以自然语气对用户说话，不提及技术细节。")
 
         val intent = Intent(context, ProactiveMessageTriggerService::class.java).apply {
             putExtra(ProactiveMessageTriggerService.EXTRA_FORCE_TRIGGER, true)
+            // 工作流唤醒独立标志：与激进模式设备事件（EXTRA_DEVICE_EVENT_CONTEXT）区分开，
+            // 避免被 buildSystemPrompt 误判为"用户手机动向（设备事件触发）"。
+            putExtra(ProactiveMessageTriggerService.EXTRA_WORKFLOW_WAKEUP, true)
             putExtra(ProactiveMessageTriggerService.EXTRA_DEVICE_EVENT_CONTEXT, ctx.toString())
         }
         try {

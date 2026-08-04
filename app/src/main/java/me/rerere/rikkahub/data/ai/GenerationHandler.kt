@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -54,6 +54,7 @@ import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.TreeShadowService
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -89,6 +90,15 @@ class GenerationHandler(
     private val aiLoggingManager: AILoggingManager,
     private val memoryBankService: MemoryBankService,
 ) {
+    // 树影下状态服务（Koin 懒取，避免构造器改动过大）
+    private val treeShadowService: TreeShadowService? by lazy {
+        try {
+            org.koin.core.context.GlobalContext.get().get<TreeShadowService>()
+        } catch (e: Exception) {
+            Log.w(TAG, "TreeShadowService not available", e)
+            null
+        }
+    }
     fun generateText(
         settings: Settings,
         model: Model,
@@ -508,7 +518,18 @@ class GenerationHandler(
                     appendLine()
                     append(tool.systemPrompt(model, messages))
                 }
- 
+
+                // 树影下状态注入（放工具提示之后：工具定义稳定、状态频繁更新，
+                // 状态放后面可提高模型 prefix 缓存命中率；总开关关闭则不注入）
+                if (settings.systemToolsSetting.treeShadowEnabled) {
+                    val statePrompt = runCatching {
+                        treeShadowService?.let { buildStatePrompt(it) } ?: ""
+                    }.getOrElse { "" }
+                    if (statePrompt.isNotBlank()) {
+                        append(statePrompt)
+                    }
+                }
+
                 // 插件提示词注入
                 if (pluginPromptInjections.isNotEmpty()) {
                     pluginPromptInjections.forEach { injection ->

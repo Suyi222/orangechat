@@ -67,6 +67,10 @@ data class SystemToolsSetting(
     val deskNoteEnabled: Boolean = false,
     // 🔍 历史聊天搜索
     val searchHistoryEnabled: Boolean = false,
+    // 🎙️ TTS 缓存列表（只控制 list_tts_exports，朗读能力不受影响）
+    val ttsCacheEnabled: Boolean = true,
+    // 🌳 树影下状态系统（关闭 → 不注入、不记录、工具消失）
+    val treeShadowEnabled: Boolean = false,
 ) {
     fun getEnabledOptions(): Set<me.rerere.rikkahub.data.ai.tools.SystemToolOption> {
         val options = mutableSetOf<me.rerere.rikkahub.data.ai.tools.SystemToolOption>()
@@ -100,6 +104,8 @@ data class SystemToolsSetting(
         if (proactiveTriggerEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.ProactiveTrigger)
         if (deskNoteEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.DeskNote)
         if (searchHistoryEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SearchHistory)
+        if (ttsCacheEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.TtsExports)
+        if (treeShadowEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.TreeShadow)
         return options
     }
 }

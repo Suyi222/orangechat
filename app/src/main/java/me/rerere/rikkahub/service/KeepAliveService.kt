@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -39,7 +39,7 @@ class KeepAliveService : Service() {
         // 前台服务通知 ID
         private const val NOTIFICATION_ID = 30001
         // 自启动广播 Action
-        const val ACTION_RESTART_KEEP_ALIVE = "me.rerere.orangechat.RESTART_KEEP_ALIVE"
+        const val ACTION_RESTART_KEEP_ALIVE = "xiguang.orangechat.RESTART_KEEP_ALIVE"
 
         /**
          * 检查服务是否正在运行（高版本系统 getRunningServices 可能受限，仅作参考）

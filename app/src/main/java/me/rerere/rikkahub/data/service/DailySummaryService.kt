@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -37,7 +37,7 @@ class DailySummaryService {
 
     companion object {
         const val TAG = "DailySummaryService"
-        const val ACTION_DAILY_CRON = "me.rerere.orangechat.DAILY_CRON"
+        const val ACTION_DAILY_CRON = "xiguang.orangechat.DAILY_CRON"
         private const val REQUEST_CODE = 10003
 
         private const val PREFS_NAME = "daily_cron_prefs"

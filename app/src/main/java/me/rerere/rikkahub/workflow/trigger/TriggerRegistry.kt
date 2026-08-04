@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -61,6 +61,7 @@ class TriggerRegistry(
     private val screen = ScreenTriggerFamily(context, triggerScope)
     private val battery = BatteryTriggerFamily(context, triggerScope)
     private val timeCron = TimeCronTriggerFamily(context, triggerScope)
+    private val randomTime = RandomTimeTriggerFamily(context, triggerScope)
     private val geofence = GeofenceTriggerFamily(context, triggerScope)
     private val appForeground = AppForegroundTriggerFamily(triggerScope)
     private val notification = NotificationTriggerFamily(triggerScope)
@@ -68,7 +69,7 @@ class TriggerRegistry(
     private val manual = ManualTriggerFamily()
 
     private val families: List<WorkflowTriggerFamily> = listOf(
-        wifi, bluetooth, headphones, power, screen, battery, timeCron, geofence,
+        wifi, bluetooth, headphones, power, screen, battery, timeCron, randomTime, geofence,
         appForeground, notification, boot, manual,
     )
 
@@ -142,6 +143,11 @@ class TriggerRegistry(
     /** Called by [WorkflowTimeCronWorker] when its scheduled time arrives. */
     suspend fun fireFromTimeCronWorker(workflowId: String) {
         timeCron.onWorkerFired(workflowId)
+    }
+
+    /** Called by [WorkflowRandomTimeWorker] when a random time point arrives. */
+    suspend fun fireFromRandomTimeWorker(workflowId: String) {
+        randomTime.onWorkerFired(workflowId)
     }
 
     suspend fun shutdown() {

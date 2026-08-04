@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -128,6 +128,24 @@ sealed class TriggerSpec {
     @Serializable @SerialName("screen_on") data object ScreenOn : TriggerSpec()
 
     @Serializable @SerialName("screen_off") data object ScreenOff : TriggerSpec()
+
+    /**
+     * Random time window trigger — fires at random moments inside [start]..[end]
+     * ("HH:mm", may wrap midnight), keeping at least [minIntervalMinutes] between fires
+     * and at most [maxTriggersPerDay] per day. Purpose: 随机查岗，鬼感拉满 👻
+     */
+    @Serializable
+    @SerialName("random_time_between")
+    data class RandomTimeBetween(
+        /** "HH:mm" (24h, device local). Window start — may be later than [end] (wraps midnight). */
+        val start: String,
+        /** "HH:mm" (24h, device local). Window end — may be earlier than [start] (wraps midnight). */
+        val end: String,
+        /** Minimum gap between two fires, in minutes. Default 120. */
+        val minIntervalMinutes: Int = 120,
+        /** Maximum fires per day. Default 3. */
+        val maxTriggersPerDay: Int = 3,
+    ) : TriggerSpec()
 
     /** Only via workflow_run() or the Settings "Run now" button. */
     @Serializable @SerialName("manual") data object Manual : TriggerSpec()

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -407,6 +407,21 @@ object WorkflowJson {
                 ParseResult.Err("invalid_trigger", "notification_received.title_matches is not a valid regex")
             !t.textMatches.isNullOrBlank() && !isValidRegex(t.textMatches) ->
                 ParseResult.Err("invalid_trigger", "notification_received.text_matches is not a valid regex")
+            else -> null
+        }
+        is TriggerSpec.RandomTimeBetween -> when {
+            !validHHmm(t.start) ->
+                ParseResult.Err("invalid_trigger", "random_time_between.start must be HH:mm 24h")
+            !validHHmm(t.end) ->
+                ParseResult.Err("invalid_trigger", "random_time_between.end must be HH:mm 24h")
+            t.minIntervalMinutes < 1 ->
+                ParseResult.Err("invalid_trigger", "random_time_between.min_interval_minutes must be ≥ 1")
+            t.minIntervalMinutes > 24 * 60 ->
+                ParseResult.Err("invalid_trigger", "random_time_between.min_interval_minutes must be ≤ 1440 (one day)")
+            t.maxTriggersPerDay < 1 ->
+                ParseResult.Err("invalid_trigger", "random_time_between.max_triggers_per_day must be ≥ 1")
+            t.maxTriggersPerDay > 1440 ->
+                ParseResult.Err("invalid_trigger", "random_time_between.max_triggers_per_day must be ≤ 1440")
             else -> null
         }
         else -> null

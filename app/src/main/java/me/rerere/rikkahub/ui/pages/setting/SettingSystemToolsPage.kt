@@ -189,6 +189,40 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
             }
             }
 
+            // 🌳 树影下
+            item {
+            CardGroup(title = { Text("🌳 树影下") }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                item(
+                    leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
+                    headlineContent = { Text("启用「树影下」状态系统") },
+                    supportingContent = { Text("开启后 AI 会持续维护你的状态卡（含备注）与时间线，聊天时自动注入上下文。关闭 = 让 AI 失明：不再记录、不再注入，已记录内容保留在页面里") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.treeShadowEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(treeShadowEnabled = enabled)) }
+                        )
+                    }
+                )
+            }
+            }
+
+            // 🎙️ TTS 缓存
+            item {
+            CardGroup(title = { Text("🎙️ TTS 缓存") }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                item(
+                    leadingContent = { Icon(imageVector = HugeIcons.Speaker01, contentDescription = null) },
+                    headlineContent = { Text("启用 TTS 缓存列表工具") },
+                    supportingContent = { Text("开启后注册 list_tts_exports 工具，AI 可查询最近 24 小时朗读过的音频缓存（长文本已本地合并为一个完整文件）。朗读能力不受此开关影响") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.ttsCacheEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(ttsCacheEnabled = enabled)) }
+                        )
+                    }
+                )
+            }
+            }
+
             // 后台保活
             item {
             CardGroup(title = { Text("后台保活") }, modifier = Modifier.padding(horizontal = 8.dp)) {

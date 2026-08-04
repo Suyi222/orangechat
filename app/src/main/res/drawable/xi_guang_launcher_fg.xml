@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 隙光 App 图标 · 前景层（无描边版，预计算坐标版）
+     奶油内圆 + 底部暖光 + 三层树冠 + 缝隙漏光 + 午后阳光光柱光斑
+     所有坐标已按原 SVG translate(15,15) scale(0.75) 预计算并整体居中于 (54,54)，
+     不使用任何 group 变换，最大程度兼容各厂商 launcher 渲染 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 内圆：暖奶油色，无描边 -->
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M10,54 A44,44 0 1,0 98,54 A44,44 0 1,0 10,54 Z" />
+
+    <!-- 内圆底部淡淡的光晕 -->
+    <path
+        android:fillColor="#FFE8B0"
+        android:fillAlpha="0.15"
+        android:pathData="M10,64.625 A44,44 0 1,0 98,64.625 A44,44 0 1,0 10,64.625 Z" />
+
+    <!-- 树冠：三层叠加，越往内颜色越深 -->
+    <path
+        android:fillColor="#6B9B6B"
+        android:fillAlpha="0.95"
+        android:pathData="M24,59.625 Q24,29.625 54,25.875 Q84,29.625 84,59.625 Q84,55.875 80.25,52.125 Q76.5,37.125 61.5,35.625 Q54,25.875 46.5,35.625 Q31.5,37.125 27.75,52.125 Q24,55.875 24,59.625 Z" />
+    <path
+        android:fillColor="#4A8A4A"
+        android:fillAlpha="0.9"
+        android:pathData="M30,52.125 Q35.25,33.375 54,29.625 Q72.75,33.375 78,52.125 Q75,44.625 65.25,40.875 Q54,31.125 42.75,40.875 Q33,44.625 30,52.125 Z" />
+    <path
+        android:fillColor="#3A7A3A"
+        android:fillAlpha="0.85"
+        android:pathData="M35.25,44.625 Q42.75,29.625 54,28.125 Q65.25,29.625 72.75,44.625 Q67.5,37.125 54,33.375 Q40.5,37.125 35.25,44.625 Z" />
+
+    <!-- 树冠缝隙（漏光孔，露出奶油色） -->
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M39.75,43.125 A3,4.5 0 1,0 45.75,43.125 A3,4.5 0 1,0 39.75,43.125 Z" />
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M63,40.875 A2.25,3.75 0 1,0 67.5,40.875 A2.25,3.75 0 1,0 63,40.875 Z" />
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M51.375,35.625 A2.625,3 0 1,0 56.625,35.625 A2.625,3 0 1,0 51.375,35.625 Z" />
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M33,55.875 A2.25,3 0 1,0 37.5,55.875 A2.25,3 0 1,0 33,55.875 Z" />
+    <path
+        android:fillColor="#F5EDE0"
+        android:pathData="M70.875,50.625 A1.875,2.625 0 1,0 74.625,50.625 A1.875,2.625 0 1,0 70.875,50.625 Z" />
+
+    <!-- 午后阳光光柱 -->
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.4"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M42.75,43.125 L39,78.375" />
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.4"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M45,43.125 L48,78.375" />
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="1"
+        android:strokeLineCap="round"
+        android:pathData="M65.25,40.875 L67.5,78.375" />
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="1"
+        android:strokeLineCap="round"
+        android:pathData="M63,40.875 L61.5,78.375" />
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M54,35.625 L52.5,78.375" />
+    <path
+        android:strokeColor="#FFB300"
+        android:strokeAlpha="0.3"
+        android:strokeWidth="1"
+        android:strokeLineCap="round"
+        android:pathData="M56.25,35.625 L57.75,78.375" />
+
+    <!-- 午后阳光光斑 -->
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.55"
+        android:pathData="M38.25,79.125 A2.25,2.25 0 1,0 42.75,79.125 A2.25,2.25 0 1,0 38.25,79.125 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.45"
+        android:pathData="M65.625,77.625 A1.875,1.875 0 1,0 69.375,77.625 A1.875,1.875 0 1,0 65.625,77.625 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.6"
+        android:pathData="M51,82.125 A3,3 0 1,0 57,82.125 A3,3 0 1,0 51,82.125 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.35"
+        android:pathData="M33.75,76.125 A1.5,1.5 0 1,0 36.75,76.125 A1.5,1.5 0 1,0 33.75,76.125 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.3"
+        android:pathData="M71.625,74.625 A1.125,1.125 0 1,0 73.875,74.625 A1.125,1.125 0 1,0 71.625,74.625 Z" />
+
+    <!-- 飘浮光点 -->
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.5"
+        android:pathData="M45.6,59.625 A0.9,0.9 0 1,0 47.4,59.625 A0.9,0.9 0 1,0 45.6,59.625 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.4"
+        android:pathData="M60.75,55.875 A0.75,0.75 0 1,0 62.25,55.875 A0.75,0.75 0 1,0 60.75,55.875 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.35"
+        android:pathData="M38.4,67.125 A0.6,0.6 0 1,0 39.6,67.125 A0.6,0.6 0 1,0 38.4,67.125 Z" />
+    <path
+        android:fillColor="#FFB300"
+        android:fillAlpha="0.3"
+        android:pathData="M68.475,63.375 A0.525,0.525 0 1,0 69.525,63.375 A0.525,0.525 0 1,0 68.475,63.375 Z" />
+</vector>

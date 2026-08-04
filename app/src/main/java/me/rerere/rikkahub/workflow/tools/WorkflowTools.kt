@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -81,6 +81,13 @@ fun workflowCreateTool(
               must pass). Invalid regex is rejected at create time.
           boot_completed — no params
           screen_on / screen_off — no params
+          random_time_between — fires at RANDOM times inside a window. params:
+              start "HH:mm", end "HH:mm" (may wrap midnight, e.g. 22:00..08:00),
+              min_interval_minutes (default 120, min gap between two fires),
+              max_triggers_per_day (default 3, daily cap). Great for "random check-in".
+              After each fire the next random point is rescheduled automatically.
+              RECOMMENDED for 查岗/主动关心类工作流: 用户想"不定时出现"时优先推荐
+              random_time_between 而不是 time_cron，避免每次都同一时间触发被摸清规律。
           manual — only fires via workflow_run tool or "Run now" button
 
         SUPPORTED CONDITION TYPES (AND-combined, all optional):
@@ -250,7 +257,7 @@ fun workflowUpdateTool(
         as workflow_create — see that tool's description for the full enumeration of
         supported trigger types (time_cron, wifi_*, bluetooth_*, headphones_*, power_*,
         battery_*, geofence_*, app_*, notification_received, boot_completed, screen_*,
-        manual) and condition types.
+        random_time_between, manual) and condition types.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

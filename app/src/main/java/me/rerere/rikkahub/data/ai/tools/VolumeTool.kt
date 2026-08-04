@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -157,7 +157,7 @@ fun createSetVolumeTool(context: Context): Tool = Tool(
                     put("error", "SecurityException: ${e.message}")
                     if (needsDnd) {
                         put("needs_permission", "NOTIFICATION_POLICY_ACCESS")
-                        put("hint", "Changing $streamName volume requires Do Not Disturb access. Go to Settings > Do Not Disturb > Allow access for 橘瓣.")
+                        put("hint", "Changing $streamName volume requires Do Not Disturb access. Go to Settings > Do Not Disturb > Allow access for 隙光.")
                     }
                 }.toString()
             ))

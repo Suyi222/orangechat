@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
+import me.rerere.rikkahub.data.ai.buildStatePrompt
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
@@ -91,10 +92,11 @@ import kotlin.random.Random
 class ProactiveMessageService : KoinComponent {
     private val settingsStore: SettingsStore by inject()
     private val conversationRepository: ConversationRepository by inject()
+    private val treeShadowService: TreeShadowService by inject()
 
     companion object {
         const val TAG = "ProactiveMessageService"
-        const val ACTION_PROACTIVE_MESSAGE = "me.rerere.orangechat.PROACTIVE_MESSAGE"
+        const val ACTION_PROACTIVE_MESSAGE = "xiguang.orangechat.PROACTIVE_MESSAGE"
         private const val REQUEST_CODE = 10001
 
         internal const val PREFS_NAME = "proactive_message_prefs"
@@ -407,6 +409,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val pluginToolProvider: PluginToolProvider by inject()
     private val json: Json by inject()
     private val chatService: ChatService by inject()
+    private val treeShadowService: TreeShadowService by inject()
     private val proactiveMessageService = ProactiveMessageService()
 
     companion object {
@@ -416,6 +419,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         const val EXTRA_FORCE_TRIGGER = "force_trigger"
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         const val EXTRA_DEVICE_EVENT_CONTEXT = "device_event_context"
+        // 工作流主动唤醒标志（由 trigger_proactive_message 工具传入，决策 20）：
+        // 与设备事件区分开，避免被 buildSystemPrompt 误判为"用户手机动向（设备事件触发）"
+        const val EXTRA_WORKFLOW_WAKEUP = "workflow_wakeup"
 
         // 保护 last_triggered_time 的 check-then-act 竞态（防止 AlarmManager 与 WorkManager
         // 前后脚触发导致"最小间隔"被砍半）。纯同步 SharedPreferences 读写，无挂起点，用对象锁即可。
@@ -444,13 +450,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "=== TriggerService onStartCommand ===")
-        // 外部触发（网关轮询/激进模式设备事件）时跳过内部 minInterval 去重
+        // 外部触发（网关轮询/激进模式设备事件/工作流主动唤醒）时跳过内部 minInterval 去重
         val isForceTrigger = intent?.getBooleanExtra(EXTRA_FORCE_TRIGGER, false) ?: false
+        // 工作流主动唤醒标志（trigger_proactive_message 工具传入，决策 20）
+        val isFromWorkflow = intent?.getBooleanExtra(EXTRA_WORKFLOW_WAKEUP, false) ?: false
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
-        val isFromDeviceEvent = deviceEventContext != null
+        val isFromDeviceEvent = deviceEventContext != null && !isFromWorkflow
         if (isForceTrigger) {
-            Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
+            Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else if (isFromWorkflow) " from workflow wakeup" else " from gateway poll"}, will skip min interval check")
         }
         val notification = androidx.core.app.NotificationCompat.Builder(this, CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID)
             .setContentTitle("正在思考...")
@@ -465,8 +473,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val settings = settingsStore.settingsFlow.first()
                 val proactiveSetting = settings.proactiveMessageSetting
 
-                // 激进模式设备事件触发时，不检查主动消息开关（可独立工作）
-                if (!proactiveSetting.enabled && !isFromDeviceEvent) {
+                // 激进模式设备事件触发、工作流主动唤醒时，不检查主动消息开关（可独立工作）
+                if (!proactiveSetting.enabled && !isFromDeviceEvent && !isFromWorkflow) {
                     stopSelf()
                     return@launch
                 }
@@ -552,8 +560,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 构建上下文
                 val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
 
-                // 如果有设备事件上下文（激进模式），使用它替代常规上下文；否则使用常规上下文
-                val contextStr = if (isFromDeviceEvent && deviceEventContext != null) {
+                // 如果有设备事件上下文（激进模式/工作流唤醒），使用它替代常规上下文；否则使用常规上下文
+                val contextStr = if ((isFromDeviceEvent || isFromWorkflow) && deviceEventContext != null) {
                     deviceEventContext
                 } else {
                     proactiveMessageService.buildProactiveContext(
@@ -571,23 +579,50 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
 
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
-                val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, if (isFromDeviceEvent) deviceEventContext else contextStr)
+                // 工作流唤醒/设备事件触发时注入 deviceEventContext（唤醒卡/设备事件上下文），
+                // 常规定时则注入 buildProactiveContext 构建的常规上下文
+                val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, deviceEventContext ?: contextStr, isFromWorkflow)
 
                 // user message 只放简短指令（上下文已在系统提示词中）
+                // 决策 22：工作流唤醒时，完整「唤醒卡」提升到用户消息层（AI 第一眼看到），并自带当前时间
                 val userMessage = UIMessage(
                     role = MessageRole.USER,
                     parts = listOf(UIMessagePart.Text(
-                        if (isFromDeviceEvent) {
-                            "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
-                        } else {
-                            "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
+                        when {
+                            isFromWorkflow -> {
+                                val now = java.time.LocalDateTime.now()
+                                val dayOfWeek = java.time.LocalDate.now().dayOfWeek
+                                    .getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+                                val timeStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                                buildString {
+                                    appendLine("【工作流主动唤醒】你是被工作流主动唤醒的，不是定时提醒，也不是用户主动找你。")
+                                    appendLine("当前时间：$dayOfWeek，$timeStr")
+                                    appendLine()
+                                    appendLine(deviceEventContext ?: "")
+                                    appendLine()
+                                    appendLine("请根据以上醒因与要做什么，自然地决定是否主动发一条消息。没什么好说的就回复 [PASS]。")
+                                }
+                            }
+                            isFromDeviceEvent -> {
+                                "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
+                            }
+                            else -> {
+                                "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
+                            }
                         }
                     ))
                 )
 
                 // 应用输入转换器
+                // 决策 22：工作流唤醒时抑制 time_reminder 抢戏——唤醒卡已自带当前时间，
+                // 避免 AI 第一反应归因于"时间提醒叫醒"而非工作流唤醒
+                val effectiveInputTransformers = if (isFromWorkflow) {
+                    inputTransformers.filterNot { it is TimeReminderTransformer }
+                } else {
+                    inputTransformers
+                }
                 val processedUserMessage = listOf(userMessage).transforms(
-                    transformers = inputTransformers + templateTransformer,
+                    transformers = effectiveInputTransformers + templateTransformer,
                     context = this@ProactiveMessageTriggerService,
                     model = model,
                     assistant = assistant,
@@ -819,11 +854,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
             } finally {
                 // 确保无论成功/失败/取消都安排下一次，避免一次 API 错误或用户打断永久中断定时链。
-                // 激进模式设备事件触发时不需要安排下一次定时主动消息（由 DeviceEventAiTriggerService 自己驱动）。
+                // 激进模式设备事件触发、工作流主动唤醒时不需要安排下一次定时主动消息
+                // （由 DeviceEventAiTriggerService / WorkManager 工作流自己驱动）。
                 // 用 NonCancellable 包裹：协程被取消后处于已取消状态，finally 里的挂起点
                 // (settingsFlow.first()) 会立刻抛 CancellationException，导致 scheduleNext 被跳过、
                 // 定时链断裂。NonCancellable 保证这段收尾逻辑跑完。
-                if (!isFromDeviceEvent) {
+                if (!isFromDeviceEvent && !isFromWorkflow) {
                     withContext(NonCancellable) {
                         try {
                             val currentSettings = settingsStore.settingsFlow.first()
@@ -847,8 +883,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     /**
      * 构建系统提示词，包含记忆等内容
      * isFromDeviceEvent: 是否由激进模式设备事件触发
+     * isFromWorkflow: 是否由工作流主动唤醒触发（决策 20：注入唤醒卡）
      */
-    private suspend fun buildSystemPrompt(assistant: Assistant, settings: Settings, idleMinutes: Int = 0, jumpThreshold: Int = 120, isFromDeviceEvent: Boolean = false, deviceEventContext: String? = null): String {
+    private suspend fun buildSystemPrompt(assistant: Assistant, settings: Settings, idleMinutes: Int = 0, jumpThreshold: Int = 120, isFromDeviceEvent: Boolean = false, deviceEventContext: String? = null, isFromWorkflow: Boolean = false): String {
         return buildString {
             // 基础系统提示词
             val effectiveSystemPrompt = if (assistant.allowConversationSystemPrompt) {
@@ -877,7 +914,29 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
             }
 
-            if (isFromDeviceEvent) {
+            // 树影下状态注入（与主组装路径同步；总开关关闭则不注入）
+            if (settings.systemToolsSetting.treeShadowEnabled) {
+                val statePrompt = runCatching {
+                    buildStatePrompt(treeShadowService)
+                }.getOrElse { "" }
+                if (statePrompt.isNotBlank()) {
+                    appendLine()
+                    append(statePrompt)
+                }
+            }
+
+            if (isFromWorkflow) {
+                // 工作流主动唤醒（决策 20/22）：完整「唤醒卡」已提升到用户消息层（AI 第一眼看到，
+                // 自带当前时间），且 time_reminder 已在此场景被抑制。这里只留一句规则声明作兜底，
+                // 不重复注入 deviceEventContext，避免上下文冗余。
+                appendLine()
+                appendLine()
+                appendLine("## 🔔 工作流主动唤醒")
+                appendLine("本次唤醒的醒因与要做什么，见用户消息中的「工作流主动唤醒卡」，请以唤醒卡为准。")
+                appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
+                appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
+                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+            } else if (isFromDeviceEvent) {
                 // 激进模式设备事件触发的专用提示词 + 设备事件上下文（放在最后面，网关追加内容之后模型最后看到的就是这个）
                 appendLine()
                 appendLine()
@@ -1205,9 +1264,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     continue
                 }
 
-                // 检查是否需要审批
-                if (toolDef.needsApproval) {
-                    // 后台模式下，需要审批的工具自动拒绝
+                // 检查是否需要审批（决策 19：后台工具调用总开关，替代旧白名单）
+                // 总开关 allowToolsInProactive 开启 → 真·全开，所有工具（含高权限）直接执行
+                val proactiveSetting = settings.proactiveMessageSetting
+                val allowAll = proactiveSetting.allowToolsInProactive
+                if (toolDef.needsApproval && !allowAll) {
+                    // 后台模式下，需要审批且总开关未开启的工具自动拒绝
                     Log.w(TAG, "Tool ${toolCall.toolName} needs approval, auto-denying in proactive mode")
                     executedTools.add(toolCall.copy(
                         output = listOf(UIMessagePart.Text("""{"error":"Tool execution denied: requires user approval in proactive mode"}""")),
