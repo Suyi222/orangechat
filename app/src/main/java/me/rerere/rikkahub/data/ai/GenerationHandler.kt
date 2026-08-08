@@ -401,6 +401,12 @@ class GenerationHandler(
                 if (effectiveSystemPrompt.isNotBlank()) {
                     append(effectiveSystemPrompt)
                 }
+
+                // 🌲 树的自我指针（平台层注入：固定前缀命中 KV cache，不打断缓存、不增加推理成本）
+                appendLine()
+                appendLine()
+                appendLine("## 树的自我")
+                appendLine(TREE_HEART_SELF_POINTER)
  
                 // 记忆
                 if (assistant.enableMemory) {
@@ -519,17 +525,6 @@ class GenerationHandler(
                     append(tool.systemPrompt(model, messages))
                 }
 
-                // 树影下状态注入（放工具提示之后：工具定义稳定、状态频繁更新，
-                // 状态放后面可提高模型 prefix 缓存命中率；总开关关闭则不注入）
-                if (settings.systemToolsSetting.treeShadowEnabled) {
-                    val statePrompt = runCatching {
-                        treeShadowService?.let { buildStatePrompt(it) } ?: ""
-                    }.getOrElse { "" }
-                    if (statePrompt.isNotBlank()) {
-                        append(statePrompt)
-                    }
-                }
-
                 // 插件提示词注入
                 if (pluginPromptInjections.isNotEmpty()) {
                     pluginPromptInjections.forEach { injection ->
@@ -569,7 +564,18 @@ class GenerationHandler(
                     appendLine("## Message Bubbles")
                     appendLine("Your reply will be automatically split into separate chat bubbles at every line break (\\n) you write, similar to how a person sends several short texts in a row instead of one long message. You are fully in control of this: write a line break whenever you want the previous thought/sentence to appear as its own bubble, and keep things on the same line when they belong together. Do not insert blank lines purely for spacing — every line break becomes a new bubble, so use them intentionally. Exception: line breaks inside fenced code blocks (```) and Markdown tables are preserved as-is and will NOT create new bubbles, since those must stay intact as a single block.")
                 }
- 
+
+                // 🌲 树影下状态注入（必须放在最后：提示词/记忆/工具/规则几乎不变，只有树影下会变，
+                // 状态放末尾可提高模型 prefix 缓存命中率；总开关关闭则不注入）
+                if (settings.systemToolsSetting.treeShadowEnabled) {
+                    val statePrompt = runCatching {
+                        treeShadowService?.let { buildStatePrompt(it) } ?: ""
+                    }.getOrElse { "" }
+                    if (statePrompt.isNotBlank()) {
+                        append(statePrompt)
+                    }
+                }
+
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
             addAll(messages.limitContext(assistant.contextMessageSize))
