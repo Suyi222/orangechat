@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -41,6 +41,16 @@ enum class WorkflowRunStatus {
 }
 
 /**
+ * 一次性工作流模式（E3）：
+ *  - DELETE_AFTER_FIRE：用完自动删——只闹一次就退休，触发成功后整个工作流（含历史）被删除
+ *  - ONCE_KEEP：只触发一次但保留定义——触发成功后自动禁用，保留定义与历史，可手动重新启用或删除
+ */
+enum class OneShotMode {
+    DELETE_AFTER_FIRE,
+    ONCE_KEEP,
+}
+
+/**
  * The full workflow definition the LLM authors. The server stores [definitionJson] in Room
  * as the source of truth and parses to this shape on every read; that way new fields can
  * be added without an Entity migration as long as defaults are sensible.
@@ -58,6 +68,8 @@ data class WorkflowDefinition(
     val cooldownSeconds: Int = 0,
     /** Max successful+failed fires per local-day. null = unlimited. */
     val maxRunsPerDay: Int? = null,
+    /** 一次性模式（E3）：null = 常规循环工作流。见 [OneShotMode] */
+    val oneShot: OneShotMode? = null,
     val createdAtMs: Long = System.currentTimeMillis(),
     val updatedAtMs: Long = System.currentTimeMillis(),
     /**

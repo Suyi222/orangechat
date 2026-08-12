@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -141,19 +141,25 @@ class MessageFtsManager(private val database: AppDatabase) {
         }
     }
 
-    suspend fun search(keyword: String): List<MessageSearchResult> = withContext(Dispatchers.IO) {
+    /**
+     * 关键词搜索。可传入 assistantId 将结果限定在某个助手自己的对话里
+     * （通过 JOIN conversationentity 关联，无需给 FTS 表加列）。
+     * assistantId 为 null 时搜索全部历史。
+     */
+    suspend fun search(keyword: String, assistantId: String? = null): List<MessageSearchResult> = withContext(Dispatchers.IO) {
         val results = mutableListOf<MessageSearchResult>()
         try {
             val cursor = db.query(
                 """
-                SELECT node_id, message_id, conversation_id, title, update_at,
+                SELECT f.node_id, f.message_id, f.conversation_id, f.title, f.update_at,
                        simple_snippet(message_fts, 0, '[', ']', '...', 30) AS snippet
-                FROM message_fts
-                WHERE text MATCH jieba_query(?)
-                ORDER BY rank, update_at DESC
+                FROM message_fts f
+                LEFT JOIN conversationentity c ON c.id = f.conversation_id
+                WHERE f.text MATCH jieba_query(?) AND (? IS NULL OR c.assistant_id = ?)
+                ORDER BY rank, f.update_at DESC
                 LIMIT 50
                 """.trimIndent(),
-                arrayOf(keyword)
+                arrayOf(keyword, assistantId, assistantId)
             )
             Log.i(TAG, "search: $keyword")
             cursor.use {

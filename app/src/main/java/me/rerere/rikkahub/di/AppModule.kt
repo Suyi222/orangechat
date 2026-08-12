@@ -69,12 +69,18 @@ val appModule = module {
     }
 
     single {
-        LocalTools(get(), get(), get(), get(), get())
+        LocalTools(get(), get(), get(), get(), get(), get())
     }
 
     single {
         me.rerere.rikkahub.data.service.TreeShadowService(
             dao = get<me.rerere.rikkahub.data.db.AppDatabase>().treeShadowDao(),
+        )
+    }
+
+    single {
+        me.rerere.rikkahub.data.service.TreeHeartService(
+            workspaceRepository = get(),
         )
     }
 

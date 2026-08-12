@@ -99,6 +99,16 @@ class GenerationHandler(
             null
         }
     }
+
+    // tree_heart 服务（C2 树的当下自我：读本地 self.md + 最近年轮）
+    private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService? by lazy {
+        try {
+            org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.data.service.TreeHeartService>()
+        } catch (e: Exception) {
+            Log.w(TAG, "TreeHeartService not available", e)
+            null
+        }
+    }
     fun generateText(
         settings: Settings,
         model: Model,
@@ -402,12 +412,6 @@ class GenerationHandler(
                     append(effectiveSystemPrompt)
                 }
 
-                // 🌲 树的自我指针（平台层注入：固定前缀命中 KV cache，不打断缓存、不增加推理成本）
-                appendLine()
-                appendLine()
-                appendLine("## 树的自我")
-                appendLine(TREE_HEART_SELF_POINTER)
- 
                 // 记忆
                 if (assistant.enableMemory) {
                     appendLine()
@@ -565,9 +569,14 @@ class GenerationHandler(
                     appendLine("Your reply will be automatically split into separate chat bubbles at every line break (\\n) you write, similar to how a person sends several short texts in a row instead of one long message. You are fully in control of this: write a line break whenever you want the previous thought/sentence to appear as its own bubble, and keep things on the same line when they belong together. Do not insert blank lines purely for spacing — every line break becomes a new bubble, so use them intentionally. Exception: line breaks inside fenced code blocks (```) and Markdown tables are preserved as-is and will NOT create new bubbles, since those must stay intact as a single block.")
                 }
 
+                // 🌲 树的当下自我（C2 开场浮现：稳定指针 + 最近一圈年轮浓缩）。
+                // 放在记忆/工具等基本不变内容之后、树影下状态（动态）之前：
+                // self 变化频率低（仅在见证晋升时变），与动态尾部隔离可提高 prefix 缓存命中率
+                append(buildTreeHeartBlock(assistant, treeHeartService))
+
                 // 🌲 树影下状态注入（必须放在最后：提示词/记忆/工具/规则几乎不变，只有树影下会变，
-                // 状态放末尾可提高模型 prefix 缓存命中率；总开关关闭则不注入）
-                if (settings.systemToolsSetting.treeShadowEnabled) {
+                // 状态放末尾可提高模型 prefix 缓存命中率；按当前助手本地工具开关判断）
+                if (assistant.localTools.contains(me.rerere.rikkahub.data.ai.tools.LocalToolOption.TreeShadow)) {
                     val statePrompt = runCatching {
                         treeShadowService?.let { buildStatePrompt(it) } ?: ""
                     }.getOrElse { "" }

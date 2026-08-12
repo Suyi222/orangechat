@@ -56,7 +56,7 @@ import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.buildStatePrompt
-import me.rerere.rikkahub.data.ai.TREE_HEART_SELF_POINTER
+import me.rerere.rikkahub.data.ai.buildTreeHeartBlock
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
@@ -94,6 +94,7 @@ class ProactiveMessageService : KoinComponent {
     private val settingsStore: SettingsStore by inject()
     private val conversationRepository: ConversationRepository by inject()
     private val treeShadowService: TreeShadowService by inject()
+    private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService by inject()
 
     companion object {
         const val TAG = "ProactiveMessageService"
@@ -411,6 +412,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val json: Json by inject()
     private val chatService: ChatService by inject()
     private val treeShadowService: TreeShadowService by inject()
+    private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService by inject()
     private val proactiveMessageService = ProactiveMessageService()
 
     companion object {
@@ -898,12 +900,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 append(effectiveSystemPrompt)
             }
 
-            // 🌲 树的自我指针（平台层注入：固定前缀命中 KV cache，不打断缓存、不增加推理成本）
-            appendLine()
-            appendLine()
-            appendLine("## 树的自我")
-            appendLine(TREE_HEART_SELF_POINTER)
-
             // 记忆（设备事件上下文移到最后面，避免被网关注入的内容淹没）
             if (assistant.enableMemory) {
                 val memories = if (assistant.useGlobalMemory) {
@@ -965,9 +961,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
             }
 
+            // 🌲 树的当下自我（C2 开场浮现：稳定指针 + 最近一圈年轮浓缩）。
+            // 放在记忆/工具等基本不变内容之后、树影下状态（动态）之前：
+            // self 变化频率低（仅在见证晋升时变），与动态尾部隔离可提高 prefix 缓存命中率
+            append(buildTreeHeartBlock(assistant, treeHeartService))
+
             // 🌲 树影下状态注入（放在最后：提示词/记忆/触发规则几乎不变，只有树影下会变，
-            // 状态放末尾可提高模型 prefix 缓存命中率；总开关关闭则不注入）
-            if (settings.systemToolsSetting.treeShadowEnabled) {
+            // 状态放末尾可提高模型 prefix 缓存命中率；按当前助手本地工具开关判断）
+            if (assistant.localTools.contains(me.rerere.rikkahub.data.ai.tools.LocalToolOption.TreeShadow)) {
                 val statePrompt = runCatching {
                     buildStatePrompt(treeShadowService)
                 }.getOrElse { "" }
@@ -1067,7 +1068,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
             if (systemToolsOptions.isNotEmpty()) {
                 val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings)
-                addAll(systemTools.getTools(systemToolsOptions))
+                addAll(systemTools.getTools(systemToolsOptions, callerAssistantId = assistant.id.toString()))
             }
 
             // MCP 工具

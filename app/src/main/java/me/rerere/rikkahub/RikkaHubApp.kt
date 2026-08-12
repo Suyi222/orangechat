@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -11,6 +11,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import coil3.ImageLoader
+import coil3.SingletonImageLoader
+import coil3.gif.AnimatedImageDecoder
+import coil3.gif.GifDecoder
+import coil3.network.cachecontrol.CacheControlCacheStrategy
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import coil3.request.crossfade
+import coil3.svg.SvgDecoder
+import okhttp3.OkHttpClient
 import androidx.compose.foundation.ComposeFoundationFlags
 import androidx.compose.runtime.Composer
 import androidx.compose.runtime.tooling.ComposeStackTraceMode
@@ -77,6 +86,29 @@ class RikkaHubApp : Application() {
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule, pluginModule)
         }
         this.createNotificationChannel()
+
+        // Coil 3 只允许在任意 Coil API 使用前设置一次全局 ImageLoader 单例。
+        // 若放在 Composable/Activity 里，弹窗等二次组合会重复调用 setSingletonImageLoaderFactory
+        // 导致 IllegalStateException 崩溃（隙光 2.3.1 闪退根因），故移到 Application 全局只设一次。
+        // 注意：setSingletonImageLoaderFactory 是 @Composable 函数，不能在 onCreate 里调用；
+        // 改用非 @Composable 的 SingletonImageLoader.setSafe（先于任何 get() 调用，只执行一次）。
+        SingletonImageLoader.setSafe { context ->
+            ImageLoader.Builder(context)
+                .crossfade(true)
+                .components {
+                    add(OkHttpNetworkFetcherFactory(
+                        callFactory = { get<OkHttpClient>() },
+                        cacheStrategy = { CacheControlCacheStrategy() },
+                    ))
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        add(AnimatedImageDecoder.Factory())
+                    } else {
+                        add(GifDecoder.Factory())
+                    }
+                    add(SvgDecoder.Factory(scaleToDensity = true))
+                }
+                .build()
+        }
 
         // 预热 ChatService 单例: 强制在主线程(Application.onCreate 由 Android 保证
         // 在主线程执行, 且先于同一进程内任何 Service/BroadcastReceiver/Activity 回调)

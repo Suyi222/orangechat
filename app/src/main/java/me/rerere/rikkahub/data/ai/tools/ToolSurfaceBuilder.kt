@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -65,10 +65,14 @@ class ToolSurfaceBuilder(
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }
-        addAll(localTools.getTools(assistant.localTools, invocationContext))
+        addAll(localTools.getTools(
+            assistant.localTools,
+            invocationContext,
+            workflowToolsEnabled = settings.systemToolsSetting.workflowManagementEnabled,
+        ))
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
         if (systemToolsOptions.isNotEmpty()) {
-            addAll(SystemTools(context, settings).getTools(systemToolsOptions, recentMessages, filesManager))
+            addAll(SystemTools(context, settings).getTools(systemToolsOptions, recentMessages, filesManager, callerAssistantId = assistant.id.toString()))
         }
         addAll(createWorkspaceTools(assistant.workspaceId?.toString(), workspaceRepository, workspaceCwd))
         if (assistant.enabledSkills.isNotEmpty()) {

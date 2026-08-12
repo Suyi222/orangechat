@@ -30,8 +30,9 @@ RikkaHub（原作者 RE 开源）
 
 - **尊重前人**：原作者 RE、橘瓣开发者 sue1231513 的代码、注释、署名全部原样保留（AGPL v3 开源协议）
 - **新增内容**：小园丁自己加的功能与文件，用「隙光」命名
+- **2.4.0 新功能**：🌲 树影下 2.0（删改/读往日/自动记录开关组）· 🧠 tree_heart 活化（开场浮现/自动落账/自动见证）· 🔍 历史检索修复 + search_chat_history · 👻 工作流一次性模式 + 暴露开关 · 🍊 修 Coil 崩溃
 - **2.3.0 新功能**：🌲 树影下状态系统 · 🕐 随机时间触发器 · 🛡️ 后台工具总开关 · 🔔 工作流主动唤醒卡
-- 📝 更新说明：[docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)
+- 📝 更新说明：[docs/RELEASE-2026-08-12-xiguang-2.4.0.md](docs/RELEASE-2026-08-12-xiguang-2.4.0.md)（2.4.0）｜ [docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)（2.3.0）
 - 🛠️ 实现文档：[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
 - 🔀 开发分支：`feature/workflow-widget-v2`
 

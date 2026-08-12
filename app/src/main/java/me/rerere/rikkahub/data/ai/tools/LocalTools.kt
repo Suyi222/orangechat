@@ -110,6 +110,14 @@ sealed class LocalToolOption {
     data object Workflows : LocalToolOption()
 
     /**
+     * 树影下状态系统. 开启后注册 state_write/read/echo_read/archive/update/delete/read_past
+     * 工具, AI 可持续维护用户的状态卡、时间线、回声, 并可改/删/读往日记录.
+     */
+    @Serializable
+    @SerialName("tree_shadow")
+    data object TreeShadow : LocalToolOption()
+
+    /**
      * 屏幕自动化. 开启后注册 tap/long_press/swipe/scroll/read_window_tree/find_node/
      * click_node/set_text/global_action/take_screenshot 等无障碍服务工具, AI 可控制屏幕.
      * 需用户在系统设置->无障碍中启用橘瓣.
@@ -133,6 +141,7 @@ class LocalTools(
     private val workflowRepository: me.rerere.rikkahub.workflow.repository.WorkflowRepository,
     private val workflowEngine: me.rerere.rikkahub.workflow.execution.WorkflowEngine,
     private val sshHostRepository: me.rerere.rikkahub.data.repository.SshHostRepository,
+    private val treeShadowService: me.rerere.rikkahub.data.service.TreeShadowService?,
 ) {
     val javascriptTool by lazy {
         Tool(
@@ -541,13 +550,17 @@ class LocalTools(
     /**
      * 工具调用上下文重载 - 供工作流引擎等无头调用方使用. 在基础工具之上额外注册
      * workflow_* 工具 (当助手开启了 Workflows 选项时), 以便 AI 能创建/管理工作流.
+     *
+     * @param workflowToolsEnabled E4 系统级闸门（设置→系统工具→工作流管理工具，默认开）：
+     * 关闭时即使助手开了本地「工作流」开关也不暴露 workflow_* 工具给 AI
      */
     fun getTools(
         options: List<LocalToolOption>,
         invocationContext: ToolInvocationContext,
+        workflowToolsEnabled: Boolean = true,
     ): List<Tool> {
         val tools = buildTools(options, invocationContext.callerConversationId, invocationContext)
-        if (options.contains(LocalToolOption.Workflows)) {
+        if (options.contains(LocalToolOption.Workflows) && workflowToolsEnabled) {
             // knownToolNamesProvider 返回空集 = 跳过创建时的工具名校验, 改在触发时由
             // ToolSurfaceBuilder 构建的完整工具面 (含 system/MCP/plugin) 校验. 这样 AI
             // 能在动作里引用 post_notification/set_torch/mcp_*/plg_* 等非本地工具.
@@ -626,6 +639,18 @@ class LocalTools(
             tools.add(me.rerere.rikkahub.data.ai.tools.local.sshUploadTool(context, sshHostRepository))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.sshDownloadTool(context, sshHostRepository))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.forgetSshHostKeyTool(context))
+        }
+        // 树影下（助手本地工具，每助手独立开关）——原为系统工具，2.4.0 迁移至此
+        if (options.contains(LocalToolOption.TreeShadow)) {
+            treeShadowService?.let { svc ->
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateWriteTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateReadTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateEchoReadTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateArchiveTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateUpdateTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateDeleteTool(svc))
+                tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateReadPastTool(svc))
+            }
         }
         return tools
     }

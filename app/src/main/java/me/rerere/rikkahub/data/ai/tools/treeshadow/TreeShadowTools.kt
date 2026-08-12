@@ -52,6 +52,13 @@ fun createStateWriteTool(service: TreeShadowService): Tool = Tool(
         val cardContent = params["state_card_content"]?.jsonPrimitive?.contentOrNull
         val note = params["state_card_note"]?.jsonPrimitive?.contentOrNull
         val timeline = params["timeline_content"]?.jsonPrimitive?.contentOrNull
+        // B1.5 空参防护：三个内容参数全空时拒绝，避免 AI 空跑一次工具拿到"成功"假信号
+        if (cardContent.isNullOrBlank() && note.isNullOrBlank() && timeline.isNullOrBlank()) {
+            return@Tool listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "at least one of state_card_content / state_card_note / timeline_content is required")
+            }.toString()))
+        }
         val today = TreeShadowService.today()
         try {
             if (!cardContent.isNullOrBlank()) {
@@ -71,6 +78,164 @@ fun createStateWriteTool(service: TreeShadowService): Tool = Tool(
                 put("success", false)
                 put("error", e.message ?: "unknown")
             }.toString()))
+        }
+    }
+)
+
+/** state_update：按 id 修改已有记录（时间线/状态卡） */
+fun createStateUpdateTool(service: TreeShadowService): Tool = Tool(
+    name = "state_update",
+    description = """
+        Update the content of an existing Tree Shadow entry (a timeline entry or the state card) by its id.
+        Use this to correct or refine a record you previously wrote. For the state card you can also update its note.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("id", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "The id of the entry to update.")
+                })
+                put("content", buildJsonObject {
+                    put("type", "string")
+                    put("description", "New content. Optional — if omitted, content is kept unchanged.")
+                })
+                put("note", buildJsonObject {
+                    put("type", "string")
+                    put("description", "New note (only applies to the state card). Optional — if omitted, note is kept.")
+                })
+            },
+            required = listOf("id")
+        )
+    },
+    execute = { args ->
+        val id = args.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        val content = args.jsonObject["content"]?.jsonPrimitive?.contentOrNull
+        val note = args.jsonObject["note"]?.jsonPrimitive?.contentOrNull
+        if (id == null) {
+            listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "id is required")
+            }.toString()))
+        } else {
+            try {
+                service.updateEntryContent(id, content, note)
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", true)
+                    put("id", id)
+                }.toString()))
+            } catch (e: Exception) {
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", false)
+                    put("error", e.message ?: "unknown")
+                }.toString()))
+            }
+        }
+    }
+)
+
+/** state_delete：按 id 删除已有记录 */
+fun createStateDeleteTool(service: TreeShadowService): Tool = Tool(
+    name = "state_delete",
+    description = """
+        Delete an existing Tree Shadow entry (a timeline entry, the state card, or an echo) by its id.
+        Use this to remove an inaccurate, duplicate, or unwanted record.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("id", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "The id of the entry to delete.")
+                })
+            },
+            required = listOf("id")
+        )
+    },
+    execute = { args ->
+        val id = args.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        if (id == null) {
+            listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "id is required")
+            }.toString()))
+        } else {
+            try {
+                service.deleteById(id)
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", true)
+                    put("deleted_id", id)
+                }.toString()))
+            } catch (e: Exception) {
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", false)
+                    put("error", e.message ?: "unknown")
+                }.toString()))
+            }
+        }
+    }
+)
+
+/** state_read_past：读取指定日期（含归档）的完整记录 */
+fun createStateReadPastTool(service: TreeShadowService): Tool = Tool(
+    name = "state_read_past",
+    description = """
+        Read a past day's full Tree Shadow records (state card, timeline, echoes) for the given date, including archived days.
+        Use this to recall what happened on a previous day or to look up an archived snapshot.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("date_group", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Date in yyyy-MM-dd, e.g. 2026-08-11.")
+                })
+            },
+            required = listOf("date_group")
+        )
+    },
+    execute = { args ->
+        val dateGroup = args.jsonObject["date_group"]?.jsonPrimitive?.contentOrNull
+        if (dateGroup == null) {
+            listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "date_group is required")
+            }.toString()))
+        } else {
+            try {
+                val records = service.getDay(dateGroup)
+                val card = records.firstOrNull { it.type == TreeShadowEntry.STATE_CARD }
+                val timeline = records.filter { it.type == TreeShadowEntry.TIMELINE }
+                val echoes = records.filter {
+                    it.type == TreeShadowEntry.ECHO_BOUND || it.type == TreeShadowEntry.ECHO_FREE
+                }
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", true)
+                    put("date_group", dateGroup)
+                    put("state_card", card?.content ?: "")
+                    if (!card?.note.isNullOrBlank()) put("state_card_note", card?.note.orEmpty())
+                    put("timeline", buildJsonArray {
+                        timeline.forEach { t -> add(buildJsonObject {
+                            put("id", t.id)
+                            put("content", t.content)
+                            put("time", t.createdAt)
+                        }) }
+                    })
+                    put("echoes", buildJsonArray {
+                        echoes.forEach { e -> add(buildJsonObject {
+                            put("id", e.id)
+                            put("type", e.type)
+                            put("content", e.content)
+                            put("time", e.createdAt)
+                        }) }
+                    })
+                }.toString()))
+            } catch (e: Exception) {
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("success", false)
+                    put("error", e.message ?: "unknown")
+                }.toString()))
+            }
         }
     }
 )

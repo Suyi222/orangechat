@@ -109,4 +109,23 @@ class TreeShadowVM(
             _archivedDay.value = treeShadowService.getDay(date)
         }
     }
+
+    /** 编辑某条记录（时间线/状态卡通用，小园丁手动改） */
+    fun updateEntry(id: Int, content: String) {
+        if (content.isBlank()) return
+        viewModelScope.launch {
+            treeShadowService.updateEntryContent(id, content.trim(), null)
+            refreshToday()
+            _selectedDate.value?.let { date -> _archivedDay.value = treeShadowService.getDay(date) }
+        }
+    }
+
+    /** 删除某条记录（其下绑定的感受一并清除） */
+    fun deleteEntry(id: Int) {
+        viewModelScope.launch {
+            treeShadowService.deleteById(id)
+            refreshToday()
+            _selectedDate.value?.let { date -> _archivedDay.value = treeShadowService.getDay(date) }
+        }
+    }
 }

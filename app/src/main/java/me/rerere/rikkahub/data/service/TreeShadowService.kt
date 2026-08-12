@@ -92,6 +92,24 @@ class TreeShadowService(
 
     suspend fun getById(id: Int): TreeShadowEntry? = dao.getById(id)
 
+    /** 按 id 更新某条记录（时间线/状态卡通用）。content 为 null 保持原内容；note 仅状态卡生效 */
+    suspend fun updateEntryContent(id: Int, content: String?, note: String?) {
+        val existing = dao.getById(id) ?: return
+        val newContent = content?.takeIf { it.isNotBlank() } ?: existing.content
+        val newNote = if (existing.type == TreeShadowEntry.STATE_CARD && note != null) {
+            note.takeIf { it.isNotBlank() }
+        } else {
+            existing.note
+        }
+        dao.update(existing.copy(content = newContent, note = newNote))
+    }
+
+    /** 按 id 删除单条记录；若删除的是时间线/状态卡，其下绑定的回声一并清除（避免孤儿数据） */
+    suspend fun deleteById(id: Int) {
+        dao.deleteBoundEchoesOf(id)
+        dao.deleteById(id)
+    }
+
     /** 已归档日期列表（时间倒序） */
     suspend fun getArchivedDates(): List<String> = dao.getArchivedDates()
 

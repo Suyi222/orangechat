@@ -10,12 +10,15 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
@@ -152,6 +155,17 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         )
                     }
                 )
+                item(
+                    leadingContent = { Icon(imageVector = HugeIcons.SmartPhone01, contentDescription = null) },
+                    headlineContent = { Text("👻 工作流管理工具") },
+                    supportingContent = { Text("总开关：控制 7 个 workflow_* 工具（创建/列表/查看/更新/删除/启停/运行）是否暴露给 AI。即使助手本地开了「工作流」开关，此开关关闭时 AI 也无法管理流程") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.workflowManagementEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(workflowManagementEnabled = enabled)) }
+                        )
+                    }
+                )
             }
             }
 
@@ -186,20 +200,14 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         )
                     }
                 )
-            }
-            }
-
-            // 🌳 树影下
-            item {
-            CardGroup(title = { Text("🌳 树影下") }, modifier = Modifier.padding(horizontal = 8.dp)) {
                 item(
-                    leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
-                    headlineContent = { Text("启用「树影下」状态系统") },
-                    supportingContent = { Text("开启后 AI 会持续维护你的状态卡（含备注）与时间线，聊天时自动注入上下文。关闭 = 让 AI 失明：不再记录、不再注入，已记录内容保留在页面里") },
+                    leadingContent = { Icon(imageVector = HugeIcons.SmartPhone01, contentDescription = null) },
+                    headlineContent = { Text("启用「搜索我的聊天记录」工具") },
+                    supportingContent = { Text("开启后注册 search_chat_history 工具。AI 可检索【当前助手自己】的历史对话（自动限定本助手，不串台），回忆过去聊过的内容") },
                     trailingContent = {
                         Switch(
-                            checked = systemToolsSetting.treeShadowEnabled,
-                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(treeShadowEnabled = enabled)) }
+                            checked = systemToolsSetting.searchChatHistoryEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(searchChatHistoryEnabled = enabled)) }
                         )
                     }
                 )
@@ -217,6 +225,119 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         Switch(
                             checked = systemToolsSetting.ttsCacheEnabled,
                             onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(ttsCacheEnabled = enabled)) }
+                        )
+                    }
+                )
+            }
+            }
+
+            // 🌳 树影下 · 自动记录（2.4.0 自动记录开关组）
+            item {
+            CardGroup(title = { Text("🌳 树影下 · 自动记录") }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                item(
+                    leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
+                    headlineContent = { Text("自动记录对话") },
+                    supportingContent = { Text("开启后系统会在章节结束/闲置时自动总结对话写入时间线；记录者默认「系统+助手」，章节长度默认 44 轮") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.autoRecordEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(autoRecordEnabled = enabled)) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = { Text("闲置段末触发") },
+                    supportingContent = { Text("闲置超过阈值（默认 15 分钟）自动总结刚结束的段落") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.autoRecordIdleEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(autoRecordIdleEnabled = enabled)) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = { Text("章节轮转触发") },
+                    supportingContent = { Text("每 N 轮对话自动总结一章（N 默认 44，独立于上下文窗口，可后续在设置里调）") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.autoRecordChapterEnabled,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterEnabled = enabled)) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = { Text("记录者") },
+                    supportingContent = {
+                        Text("系统自动 = 确定性总结（可靠）；助手主动 = AI 自己用工具记录（活）；两者都要 = 系统兜底 + 助手可补充（推荐）")
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        ) {
+                            val recorderOptions = listOf(
+                                "system" to "系统自动",
+                                "agent" to "助手主动",
+                                "both" to "两者都要",
+                            )
+                            recorderOptions.forEach { (value, label) ->
+                                FilterChip(
+                                    selected = systemToolsSetting.autoRecordRecorder == value,
+                                    onClick = { updateSystemToolsSetting(systemToolsSetting.copy(autoRecordRecorder = value)) },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    },
+                )
+                if (systemToolsSetting.autoRecordChapterEnabled) {
+                    item(
+                        headlineContent = { Text("章节长度 N（轮）") },
+                        supportingContent = {
+                            Text("每 N 轮对话记一条时间线。独立于模型上下文窗口，改 30/60/100 都可以")
+                            OutlinedTextField(
+                                value = systemToolsSetting.autoRecordChapterN.toString(),
+                                onValueChange = { input ->
+                                    val n = input.toIntOrNull()
+                                    if (n != null && n > 0) {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterN = n))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                singleLine = true,
+                                shape = MaterialTheme.shapes.small,
+                                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                            )
+                        },
+                    )
+                }
+                if (systemToolsSetting.autoRecordIdleEnabled) {
+                    item(
+                        headlineContent = { Text("闲置阈值（分钟）") },
+                        supportingContent = {
+                            Text("对话闲置超过该时长，自动总结刚结束的段落")
+                            OutlinedTextField(
+                                value = systemToolsSetting.autoRecordIdleMinutes.toString(),
+                                onValueChange = { input ->
+                                    val m = input.toIntOrNull()
+                                    if (m != null && m > 0) {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(autoRecordIdleMinutes = m))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                singleLine = true,
+                                shape = MaterialTheme.shapes.small,
+                                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                            )
+                        },
+                    )
+                }
+                item(
+                    headlineContent = { Text("深度对话额外落年轮") },
+                    supportingContent = { Text("开启后，章节总结还会回答「此刻我是什么/长出了什么/对未来的树说什么」并落一圈年轮到 tree_heart（需助手绑定工作区）") },
+                    trailingContent = {
+                        Switch(
+                            checked = systemToolsSetting.autoRecordAnnualRing,
+                            onCheckedChange = { enabled -> updateSystemToolsSetting(systemToolsSetting.copy(autoRecordAnnualRing = enabled)) }
                         )
                     }
                 )

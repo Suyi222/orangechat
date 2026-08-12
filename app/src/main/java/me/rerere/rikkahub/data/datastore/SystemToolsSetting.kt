@@ -67,10 +67,21 @@ data class SystemToolsSetting(
     val deskNoteEnabled: Boolean = false,
     // 🔍 历史聊天搜索
     val searchHistoryEnabled: Boolean = false,
+    // 🔍 按助手限定的历史聊天搜索（search_chat_history，只搜当前助手自己的对话）
+    val searchChatHistoryEnabled: Boolean = false,
+    // 👻 工作流管理工具（E4 系统级闸门：控制 workflow_* 工具是否暴露给 AI，默认开）
+    val workflowManagementEnabled: Boolean = true,
     // 🎙️ TTS 缓存列表（只控制 list_tts_exports，朗读能力不受影响）
     val ttsCacheEnabled: Boolean = true,
-    // 🌳 树影下状态系统（关闭 → 不注入、不记录、工具消失）
-    val treeShadowEnabled: Boolean = false,
+    // 🌳 树影下自动记录（决策 9 / 2.4.0 自动记录开关组）
+    val autoRecordEnabled: Boolean = true,              // 总开关
+    val autoRecordRecorder: String = "both",            // 记录者: system / agent / both
+    val autoRecordIdleEnabled: Boolean = true,          // 闲置段末触发（默认常开）
+    val autoRecordChapterEnabled: Boolean = false,      // 章节轮转触发（默认关，灵活开关）
+    val autoRecordChapterN: Int = 44,                   // 每 N 轮记一条（独立于模型窗口）
+    val autoRecordIdleMinutes: Int = 15,                // 闲置阈值（分钟）
+    val autoRecordSummaryModel: String? = null,         // 总结模型 id，null 则用 compressModelId
+    val autoRecordAnnualRing: Boolean = false,          // 深度对话额外落年轮（B3.6/C3.1，默认关）
 ) {
     fun getEnabledOptions(): Set<me.rerere.rikkahub.data.ai.tools.SystemToolOption> {
         val options = mutableSetOf<me.rerere.rikkahub.data.ai.tools.SystemToolOption>()
@@ -104,8 +115,8 @@ data class SystemToolsSetting(
         if (proactiveTriggerEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.ProactiveTrigger)
         if (deskNoteEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.DeskNote)
         if (searchHistoryEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SearchHistory)
+        if (searchChatHistoryEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SearchChatHistory)
         if (ttsCacheEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.TtsExports)
-        if (treeShadowEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.TreeShadow)
         return options
     }
 }

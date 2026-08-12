@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -54,6 +54,8 @@ data class Assistant(
     val externalMemoryIds: Set<Uuid> = emptySet(),      // 关联的外置记忆库 ID
     val splitBubbleByLine: Boolean = false,             // 按模型自己写的换行拆分成多个独立气泡
     val splitUserBubbleByLine: Boolean = false,         // 用户消息按换行拆分成多个独立气泡
+    val treeHeartEnabled: Boolean = true,               // 🌲 树的自我开关（C5.1 默认开；关则不注入）
+    val treeHeartPointer: String = "",                  // 🌲 自定义自我指针文本（C5.1；空 = 读本地 self.md / 默认指针）
 )
  
 @Serializable

@@ -52,17 +52,20 @@ fun workflowCreateTool(
         dispatcher (HARDLINE applies at fire time, every action goes through the same
         approval-bypass headless path scheduled jobs use).
 
-        ALL WORKFLOW TRIGGERS ARE RECURRING (event-driven). There is NO one-shot mode.
-        For one-shot "fire once at X time" the user wants the schedule_job tool instead
-        (schedule_type: "once") — a separate cron-jobs system, not workflows.
+        ONE-SHOT MODE (optional): add "one_shot": "delete_after_fire" to make a one-and-done
+        workflow — right after its first successful fire it is deleted (definition + history),
+        retiring automatically. Or "one_shot": "once_keep" to auto-disable after the first
+        successful fire while keeping the definition (re-enable later to fire again).
+        Without one_shot, workflows are recurring (event-driven) — for a plain one-time
+        scheduled job use the schedule_job tool instead (schedule_type: "once").
 
         SUPPORTED TRIGGER TYPES (use these exact strings in trigger.type):
           time_cron — recurring schedule. Either:
               cron: "<5-field cron>"  (max once per minute), OR
               time_of_day: "HH:mm" — fires every day at that time (and every day in
                   days_of_week if provided, [1..7] ISO 1=Mon).
-              ALWAYS RECURRING. To run once, delete the workflow after the first fire,
-              or use the schedule_job tool with schedule_type:"once" instead.
+              Recurring by default. For "fire once", set one_shot:"delete_after_fire"
+              or one_shot:"once_keep" on the definition.
           wifi_connected / wifi_disconnected — params: ssid (optional, null = any)
           bluetooth_device_connected / bluetooth_device_disconnected — params: device_address (optional)
           headphones_plugged / headphones_unplugged — no params
@@ -119,7 +122,8 @@ fun workflowCreateTool(
                     put("type", "object")
                     put("description", "The workflow definition. Required keys: name, trigger, actions. " +
                         "Optional: description, enabled (default true), conditions (array), " +
-                        "cooldown_seconds (default 0), max_runs_per_day (default unlimited), id.")
+                        "cooldown_seconds (default 0), max_runs_per_day (default unlimited), " +
+                        "one_shot ('delete_after_fire' 用完自动删 / 'once_keep' 只触发一次但保留定义), id.")
                 })
             },
             required = listOf("definition"),

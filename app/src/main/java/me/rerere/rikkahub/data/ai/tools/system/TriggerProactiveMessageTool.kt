@@ -40,6 +40,10 @@ fun createTriggerProactiveMessageTool(context: Context): Tool = Tool(
                     put("type", "boolean")
                     put("description", "Auto-include screen usage data. Default: true")
                 })
+                put("workflow_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Source workflow id (injected by the workflow engine when this tool fires as a workflow action). Optional for direct calls.")
+                })
             },
             required = listOf("message")
         )
@@ -48,10 +52,14 @@ fun createTriggerProactiveMessageTool(context: Context): Tool = Tool(
         val params = args.jsonObject
         val message = params["message"]?.jsonPrimitive?.contentOrNull ?: error("message is required")
         val includeUsage = params["include_usage"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+        val workflowId = params["workflow_id"]?.jsonPrimitive?.contentOrNull
 
         // 唤醒卡：醒因 + 要做什么，注入 AI 上下文顶部，让 AI 明确知道自己是"被工作流主动唤醒"的
         val ctx = StringBuilder()
         ctx.appendLine("【醒因】你是被工作流主动唤醒的（不是定时提醒，也不是用户主动找你）。")
+        if (!workflowId.isNullOrBlank()) {
+            ctx.appendLine("【来源】工作流 $workflowId")
+        }
         ctx.appendLine("【要做什么】$message")
         if (includeUsage) ctx.appendLine("（设备使用数据将自动附加）")
         ctx.appendLine()

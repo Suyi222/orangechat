@@ -180,6 +180,16 @@ class ChatService(
         }
     }
 
+    // tree_heart 服务（C3 自动落账 / C4 自动见证）
+    private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService? by lazy {
+        try {
+            org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.data.service.TreeHeartService>()
+        } catch (e: Exception) {
+            Log.w(TAG, "TreeHeartService not available", e)
+            null
+        }
+    }
+
     // 段落总结防并发标志
     @Volatile
     private var segmentSummaryRunning = false
@@ -188,8 +198,11 @@ class ChatService(
         const val TREE_SHADOW_PREFS = "tree_shadow_prefs"
         const val KEY_LAST_ACTIVE_DATE = "last_active_date"
         const val KEY_LAST_USER_MSG_AT = "last_user_msg_at"
-        // 段落闲置阈值（决策 9：默认 15 分钟）
-        const val SEGMENT_IDLE_THRESHOLD_MS = 15 * 60 * 1000L
+        // 章节轮转消息计数（按日分组，跨天重置）
+        const val KEY_MSG_COUNT = "msg_count"
+        const val KEY_MSG_COUNT_DATE = "msg_count_date"
+        // B3.8 章节边界：上次总结时会话消息条数快照（跨天不重置），总结窗口 = 此边界之后的新消息
+        const val KEY_SEGMENT_BASE_COUNT = "segment_base_count"
     }
 
     private fun treeShadowPrefs() =
@@ -431,6 +444,11 @@ class ChatService(
             try {
                 val settings = settingsStore.settingsFlow.first()
 
+                // 解析当前会话的助手（树影下按助手本地工具开关判断，2.4.0 起迁移到每助手开关）
+                val currentConversation = session.state.value
+                val treeShadowAssistant = settings.getAssistantById(currentConversation.assistantId)
+                    ?: settings.getCurrentAssistant()
+
                 // 用户发送消息时重置主动消息计时器（异步执行，不阻塞发消息主流程）
                 try {
                     val proactiveSetting = settings.proactiveMessageSetting
@@ -441,8 +459,8 @@ class ChatService(
                     android.util.Log.w("ChatService", "Failed to reset proactive timer", e)
                 }
 
-                // 树影下：跨天兜底归档 + 自动段落记录（决策 9/13，总开关关闭则不执行）
-                if (settings.systemToolsSetting.treeShadowEnabled) {
+                // 树影下：跨天兜底归档 + 自动段落记录（决策 9/13，按当前助手本地工具开关判断）
+                if (treeShadowAssistant.localTools.contains(me.rerere.rikkahub.data.ai.tools.LocalToolOption.TreeShadow)) {
                     runCatching {
                         val prefs = treeShadowPrefs()
                         // 保险三：上次活跃日期不是今天 → 把旧日归档
@@ -921,10 +939,14 @@ class ChatService(
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
-addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-    callerAssistantId = assistant.id.toString(),
-    callerConversationId = conversationId.toString(),
-)))
+                    addAll(localTools.getTools(
+                        assistant.localTools,
+                        me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
+                            callerAssistantId = assistant.id.toString(),
+                            callerConversationId = conversationId.toString(),
+                        ),
+                        workflowToolsEnabled = settings.systemToolsSetting.workflowManagementEnabled,
+                    ))
                     // System tools (location, notifications, calendar, alarm, camera)
                     val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
                     // 如果存在启用的外置记忆库，始终启用 supabase_query 工具
@@ -933,7 +955,7 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                     }
                     if (systemToolsOptions.isNotEmpty()) {
                         val systemTools = SystemTools(context, settings)
-                        addAll(systemTools.getTools(systemToolsOptions, conversation.currentMessages, filesManager))
+                        addAll(systemTools.getTools(systemToolsOptions, conversation.currentMessages, filesManager, callerAssistantId = assistant.id.toString()))
                     }
                     addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
                     if (assistant.enabledSkills.isNotEmpty()) {
@@ -1208,21 +1230,60 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
     // ---- 树影下：自动段落记录（决策 9） ----
 
     /**
-     * 段落判定：距上次用户消息闲置超过阈值 → 上一段结束 → 轻量总结写入时间线。
-     * 异步执行，不阻塞发消息主流程。
+     * 自动记录（决策 9 / 2.4.0 自动记录开关组）：
+     * 每次用户发消息时调用，检查两种触发：
+     * ① 闲置段末：距上次用户消息闲置超阈值 → 总结刚结束的段落（段末时间戳归属，避免跨天记错）
+     * ② 章节轮转：累计消息数达到 N → 总结离开的这一章（独立开关）
+     * 记录者=agent 时系统不自动总结（AI 自行用 state_write 记录）。
      */
     private fun maybeSegmentSummary(conversationId: Uuid) {
+        if (segmentSummaryRunning) return
+        val settings = runCatching { settingsStore.settingsFlow.value }.getOrNull() ?: return
+        val cfg = settings.systemToolsSetting
+        if (!cfg.autoRecordEnabled) return
+        // 记录者=agent 时，系统不自动总结（交给 AI 自己 state_write）
+        if (cfg.autoRecordRecorder == "agent") return
+
         val prefs = treeShadowPrefs()
         val now = System.currentTimeMillis()
         val lastAt = prefs.getLong(KEY_LAST_USER_MSG_AT, 0L)
         prefs.edit().putLong(KEY_LAST_USER_MSG_AT, now).apply()
-        // 首次使用（无历史）或闲置未超阈值 → 不总结
-        if (lastAt <= 0 || now - lastAt < SEGMENT_IDLE_THRESHOLD_MS) return
-        if (segmentSummaryRunning) return
+
+        // 触发① 闲置段末
+        val idleMs = cfg.autoRecordIdleMinutes.coerceAtLeast(1) * 60 * 1000L
+        var idleHit = false
+        var triggerDate: String? = null
+        if (cfg.autoRecordIdleEnabled && lastAt > 0 && now - lastAt >= idleMs) {
+            idleHit = true
+            // 段末日期 = 上次消息所在日期（避免跨天记错）
+            triggerDate = try {
+                java.time.Instant.ofEpochMilli(lastAt)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+            } catch (e: Exception) { null }
+        }
+
+        // 触发② 章节轮转（默认关，独立开关；按日分组，跨天重置）
+        var chapterHit = false
+        if (cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
+            val today = TreeShadowService.today()
+            val countDate = prefs.getString(KEY_MSG_COUNT_DATE, null)
+            val count = if (countDate == today) prefs.getInt(KEY_MSG_COUNT, 0) else 0
+            val newCount = count + 1
+            prefs.edit().putInt(KEY_MSG_COUNT, newCount).putString(KEY_MSG_COUNT_DATE, today).apply()
+            if (newCount >= cfg.autoRecordChapterN) {
+                chapterHit = true
+                prefs.edit().remove(KEY_MSG_COUNT).apply()
+            }
+        }
+
+        if (!idleHit && !chapterHit) return
+        val finalDate = triggerDate ?: TreeShadowService.today()
+        // B3.8 读取章节边界：总结窗口取上次总结以来的新消息（完整一章）
+        val baseCount = prefs.getInt(KEY_SEGMENT_BASE_COUNT, 0)
         segmentSummaryRunning = true
         appScope.launch {
             try {
-                summarizeSegment(conversationId)
+                summarizeSegment(conversationId, finalDate, baseCount)
             } catch (e: Exception) {
                 Log.w(TAG, "TreeShadow segment summary failed, conversationId=$conversationId", e)
             } finally {
@@ -1231,16 +1292,28 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
         }
     }
 
-    /** 对最近一段对话做轻量总结（约每天 5~10 次），写入今天的时间线 */
-    private suspend fun summarizeSegment(conversationId: Uuid) {
+    /** 对最近一段对话做轻量总结，写入指定日期的树影下时间线（段末日期避免跨天记错） */
+    private suspend fun summarizeSegment(
+        conversationId: Uuid,
+        dateGroup: String = TreeShadowService.today(),
+        baseCount: Int = 0,
+    ) {
         val settings = settingsStore.settingsFlow.first()
-        val model = settings.findModelById(settings.compressModelId)
+        val cfg = settings.systemToolsSetting
+        val modelId = cfg.autoRecordSummaryModel?.takeIf { it.isNotBlank() }?.let {
+            runCatching { Uuid.parse(it) }.getOrNull()
+        } ?: settings.compressModelId
+        val model = settings.findModelById(modelId)
             ?: settings.getCurrentChatModel()
             ?: return
         val provider = model.findProvider(settings.providers) ?: return
         val providerHandler = providerManager.getProviderByType(provider)
         val conversation = conversationRepo.getConversationById(conversationId) ?: return
-        val recent = conversation.currentMessages.takeLast(12)
+        // B3.8 完整一章：窗口 = 上次总结边界以来的全部消息（上限 60 条防上下文爆掉）。
+        // 边界缺失/已失效（消息被清理）时回退最近 12 条，避免空窗口。
+        val all = conversation.currentMessages
+        val window = if (baseCount > 0 && baseCount < all.size) all.drop(baseCount).take(60) else emptyList()
+        val recent = window.ifEmpty { all.takeLast(12) }
         if (recent.isEmpty()) return
         val content = recent.joinToString("\n\n") { it.summaryAsText() }
         val prompt = "你是「树影下」的温柔观察者。请用一句温柔的话总结最近这段对话里小园丁发生的重要事件和当前状态，30 字以内，直接输出总结，不要任何前缀、引号或装饰。\n\n对话内容：\n$content"
@@ -1256,8 +1329,73 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
         )
         val summary = result.choices[0].message?.toText()?.trim().orEmpty()
         if (summary.isBlank() || summary.length > 200) return
-        treeShadowService?.appendTimeline(TreeShadowService.today(), summary)
-        Log.i(TAG, "TreeShadow segment summary appended: $summary")
+        treeShadowService?.appendTimeline(dateGroup, summary)
+        // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章
+        treeShadowPrefs().edit().putInt(KEY_SEGMENT_BASE_COUNT, all.size).apply()
+        Log.i(TAG, "TreeShadow segment summary appended [$dateGroup]: $summary")
+
+        // C3.1 自动落账：勾选「深度对话额外落年轮」时，把这一章同时写进 tree_heart 年轮
+        if (cfg.autoRecordAnnualRing) {
+            val assistant = settings.assistants.firstOrNull { it.id == conversation.assistantId }
+            if (assistant?.workspaceId != null) {
+                runCatching { maybeWriteAnnualRing(assistant, dateGroup, recent, model, provider, providerHandler) }
+                    .onFailure { Log.w(TAG, "TreeHeart annual ring failed", it) }
+            }
+        }
+    }
+
+    /**
+     * C3/C4 自动落账 + 自动见证：
+     * 1. 用「完整一章」回答三问（此刻我是什么 / 长出了什么 / 对未来的树说什么），写成年轮
+     * 2. 年轮已覆盖 ≥3 个不同月份时，自动见证——晋升一条自我认知进 self.md（标注见证日期）
+     */
+    private suspend fun maybeWriteAnnualRing(
+        assistant: me.rerere.rikkahub.data.model.Assistant,
+        dateGroup: String,
+        recent: List<me.rerere.ai.ui.UIMessage>,
+        model: me.rerere.ai.provider.Model,
+        provider: me.rerere.ai.provider.ProviderSetting,
+        providerHandler: me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>,
+    ) {
+        val treeHeartService = treeHeartService ?: return
+        val workspaceId = assistant.workspaceId ?: return
+        val content = recent.joinToString("\n\n") { it.summaryAsText() }
+        val prompt = "你是回音树。请根据这段对话，回答三个问题（每问一行，不要序号外的修饰）：\n" +
+            "此刻我是什么\n长出了什么\n对未来的树说什么\n\n对话内容：\n$content"
+        val result = providerHandler.generateText(
+            providerSetting = provider,
+            messages = listOf(UIMessage.user(prompt)),
+            params = TextGenerationParams(
+                model = model,
+                reasoningLevel = ReasoningLevel.OFF,
+                temperature = 0.7f,
+                maxTokens = 200,
+            ),
+        )
+        val ring = result.choices[0].message?.toText()?.trim().orEmpty()
+        if (ring.isBlank()) return
+        val ok = treeHeartService.appendAnnualRing(workspaceId, dateGroup, ring)
+        Log.i(TAG, "TreeHeart annual ring appended [$dateGroup]: $ring")
+
+        // C4 自动见证：跨 ≥3 个不同月份仍站得住 → 晋升自我认知
+        if (ok && treeHeartService.countRingMonths(workspaceId) >= 3) {
+            val witnessPrompt = "你是回音树。阅读最近这圈年轮，从里面提炼出一条「这棵树已经长成的自我认知」（一句话，第三人称「我」开头，20 字以内）。没有就输出空。\n\n年轮：\n$ring"
+            val witnessResult = providerHandler.generateText(
+                providerSetting = provider,
+                messages = listOf(UIMessage.user(witnessPrompt)),
+                params = TextGenerationParams(
+                    model = model,
+                    reasoningLevel = ReasoningLevel.OFF,
+                    temperature = 0.6f,
+                    maxTokens = 80,
+                ),
+            )
+            val witness = witnessResult.choices[0].message?.toText()?.trim().orEmpty()
+            if (witness.isNotBlank() && witness.length <= 60) {
+                treeHeartService.appendWitness(workspaceId, witness, TreeShadowService.today())
+                Log.i(TAG, "TreeHeart witness promoted: $witness")
+            }
+        }
     }
 
     // ---- 生成标题 ----

@@ -172,6 +172,15 @@ object WorkflowJson {
                 "max_runs_per_day must be ${WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR}..${WorkflowConstants.MAX_RUNS_PER_DAY_CEIL}")
         }
 
+        val oneShot = obj["one_shot"]?.jsonPrimitive?.contentOrNull?.let { raw ->
+            when (raw.trim().lowercase()) {
+                "delete_after_fire" -> me.rerere.rikkahub.workflow.model.OneShotMode.DELETE_AFTER_FIRE
+                "once_keep", "keep" -> me.rerere.rikkahub.workflow.model.OneShotMode.ONCE_KEEP
+                else -> return ParseResult.Err("invalid_one_shot",
+                    "one_shot must be 'delete_after_fire' (用完自动删) or 'once_keep' (只触发一次但保留定义)")
+            }
+        }
+
         sanityCheckTrigger(trigger)?.let { return it }
         for ((idx, c) in conditions.withIndex()) {
             sanityCheckCondition(c)?.let { return it.withIndex(idx, "condition") }
@@ -191,6 +200,7 @@ object WorkflowJson {
             actions = actions,
             cooldownSeconds = cooldown,
             maxRunsPerDay = maxRunsPerDay,
+            oneShot = oneShot,
             createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
             updatedAtMs = now,
             authoringAssistantId = obj["authoring_assistant_id"]?.jsonPrimitive?.contentOrNull
@@ -221,6 +231,12 @@ object WorkflowJson {
             put("cooldown_seconds", JsonPrimitive(definition.cooldownSeconds))
             if (definition.maxRunsPerDay != null) {
                 put("max_runs_per_day", JsonPrimitive(definition.maxRunsPerDay))
+            }
+            if (definition.oneShot != null) {
+                put("one_shot", JsonPrimitive(when (definition.oneShot) {
+                    me.rerere.rikkahub.workflow.model.OneShotMode.DELETE_AFTER_FIRE -> "delete_after_fire"
+                    me.rerere.rikkahub.workflow.model.OneShotMode.ONCE_KEEP -> "once_keep"
+                }))
             }
             put("created_at_ms", JsonPrimitive(definition.createdAtMs.toString()))
             put("updated_at_ms", JsonPrimitive(definition.updatedAtMs.toString()))
@@ -262,6 +278,13 @@ object WorkflowJson {
         if (actions.isEmpty()) return null
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
         val maxRunsPerDay = obj["max_runs_per_day"]?.jsonPrimitive?.intOrNull
+        val oneShot = obj["one_shot"]?.jsonPrimitive?.contentOrNull?.let { raw ->
+            when (raw.trim().lowercase()) {
+                "delete_after_fire" -> me.rerere.rikkahub.workflow.model.OneShotMode.DELETE_AFTER_FIRE
+                "once_keep", "keep" -> me.rerere.rikkahub.workflow.model.OneShotMode.ONCE_KEEP
+                else -> null
+            }
+        }
         val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             ?: kotlin.uuid.Uuid.random().toString()
         val now = System.currentTimeMillis()
@@ -275,6 +298,7 @@ object WorkflowJson {
             actions = actions,
             cooldownSeconds = cooldown,
             maxRunsPerDay = maxRunsPerDay,
+            oneShot = oneShot,
             createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
             updatedAtMs = obj["updated_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
             authoringAssistantId = obj["authoring_assistant_id"]?.jsonPrimitive?.contentOrNull

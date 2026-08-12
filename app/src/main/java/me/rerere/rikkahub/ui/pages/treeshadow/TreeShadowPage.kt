@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -40,6 +42,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -49,10 +52,15 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.ArrowLeft01
+import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.Book01
 import me.rerere.hugeicons.stroke.Clock02
+import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Edit01
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.PlusSign
 import me.rerere.rikkahub.data.db.entity.TreeShadowEntry
@@ -84,6 +92,9 @@ fun TreeShadowPage(
     var selectedTab by remember { mutableStateOf(0) }
     // 绑定回声目标（点时间线记录 -> 写一句感受）
     var echoTarget by remember { mutableStateOf<TreeShadowEntry?>(null) }
+    // 编辑 / 删除目标（B4.3 小园丁手动改）
+    var editTarget by remember { mutableStateOf<TreeShadowEntry?>(null) }
+    var deleteTarget by remember { mutableStateOf<TreeShadowEntry?>(null) }
     // 往日日期详情
     var archivedDetailDate by remember { mutableStateOf<String?>(null) }
 
@@ -144,6 +155,8 @@ fun TreeShadowPage(
                     timeline = timeline,
                     echoes = echoes,
                     onTimelineClick = { echoTarget = it },
+                    onEdit = { editTarget = it },
+                    onDelete = { deleteTarget = it },
                     onSendFreeEcho = { vm.addFreeEcho(it) },
                 )
 
@@ -170,6 +183,42 @@ fun TreeShadowPage(
         )
     }
 
+    // 编辑记录对话框（B4.3）
+    editTarget?.let { target ->
+        EditEntryDialog(
+            entry = target,
+            onDismiss = { editTarget = null },
+            onSave = { content ->
+                vm.updateEntry(target.id, content)
+                editTarget = null
+            }
+        )
+    }
+
+    // 删除确认对话框（B4.3）
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除这条记录？") },
+            text = {
+                Text("「${target.content.take(40)}${if (target.content.length > 40) "…" else ""}」将永久删除，其下绑定的感受也会一并删除。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteEntry(target.id)
+                    deleteTarget = null
+                }) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     // 往日详情对话框
     archivedDetailDate?.let { date ->
         val dayEntries = if (date == selectedDate) archivedDay else emptyList()
@@ -187,14 +236,18 @@ private fun TodayTab(
     timeline: List<TreeShadowEntry>,
     echoes: List<TreeShadowEntry>,
     onTimelineClick: (TreeShadowEntry) -> Unit,
+    onEdit: (TreeShadowEntry) -> Unit,
+    onDelete: (TreeShadowEntry) -> Unit,
     onSendFreeEcho: (String) -> Unit,
 ) {
     val freeEchoes = echoes.filter { it.parentId == null }
     val boundEchoes = echoes.filter { it.parentId != null }
     var echoInput by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -220,6 +273,8 @@ private fun TodayTab(
                 entry = entry,
                 boundEchoes = boundEchoes.filter { it.parentId == entry.id },
                 onClick = { onTimelineClick(entry) },
+                onEdit = { onEdit(entry) },
+                onDelete = { onDelete(entry) },
             )
         }
 
@@ -276,6 +331,13 @@ private fun ArchivedTab(
     archivedDates: List<String>,
     onDateClick: (String) -> Unit,
 ) {
+    // B4.4 按月自动分组：YYYY-MM → List<date>（时间倒序）
+    val months = remember(archivedDates) {
+        archivedDates.groupBy { it.take(7) }
+    }
+    // 月份折叠状态：默认全部折叠，点月份展开看日期
+    val expandedMonths = remember { mutableStateMapOf<String, Boolean>() }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -288,36 +350,76 @@ private fun ArchivedTab(
             item {
                 EmptyHint("还没有归档的日子。点右上角「归档今天」或让 AI 道晚安时归档。")
             }
-        }
-        items(archivedDates) { date ->
-            Surface(
-                onClick = { onDateClick(date) },
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Icon(
-                        HugeIcons.Book01,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = date,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    Text(
-                        text = "查看",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+        } else {
+            months.forEach { (month, dates) ->
+                item(key = "month_$month") {
+                    Surface(
+                        onClick = { expandedMonths[month] = !(expandedMonths[month] ?: false) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(
+                                HugeIcons.Book01,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = month,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(modifier = Modifier.weight(1f))
+                            Text(
+                                text = "${dates.size} 天",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Icon(
+                                if (expandedMonths[month] == true) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                if (expandedMonths[month] == true) {
+                    items(dates, key = { "date_$it" }) { date ->
+                        Surface(
+                            onClick = { onDateClick(date) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.6f),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text(
+                                    text = date.takeLast(5),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Spacer(modifier = Modifier.weight(1f))
+                                Text(
+                                    text = "查看",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -400,13 +502,16 @@ private fun StateCardView(entry: TreeShadowEntry) {
     }
 }
 
-/** 时间线记录 + 嵌套的绑定回声 */
+/** 时间线记录 + 嵌套的绑定回声（B4.1 展开/收起，B4.3 编辑/删除） */
 @Composable
 private fun TimelineCard(
     entry: TreeShadowEntry,
     boundEchoes: List<TreeShadowEntry>,
     onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    var expanded by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -435,19 +540,59 @@ private fun TimelineCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onClick) {
-                    Text(
-                        text = "写一句感受",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+                // 编辑 / 删除（小园丁手动改）
+                IconButton(onClick = onEdit, modifier = Modifier.size(28.dp)) {
+                    Icon(HugeIcons.Edit01, contentDescription = "编辑", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                    Icon(HugeIcons.Delete01, contentDescription = "删除", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                 }
             }
             Text(
                 text = entry.content,
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = 6,
+                maxLines = if (expanded) Int.MAX_VALUE else 6,
                 overflow = TextOverflow.Ellipsis,
             )
+            // 展开/收起（B4.1，内容被截断时才显示）
+            if (entry.content.length > 100) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    TextButton(onClick = { expanded = !expanded }) {
+                        Icon(
+                            if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (expanded) "收起" else "展开全文",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    TextButton(onClick = onClick) {
+                        Text(
+                            text = "写一句感受",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onClick) {
+                        Text(
+                            text = "写一句感受",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
             boundEchoes.forEach { echo ->
                 Surface(
                     modifier = Modifier
@@ -558,6 +703,55 @@ private fun BoundEchoDialog(
                 enabled = content.isNotBlank(),
             ) {
                 Text("写下")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+/** 编辑记录对话框（B4.3 小园丁手动改） */
+@Composable
+private fun EditEntryDialog(
+    entry: TreeShadowEntry,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var content by remember(entry.id) { mutableStateOf(entry.content) }
+    val typeLabel = when (entry.type) {
+        TreeShadowEntry.STATE_CARD -> "状态卡"
+        TreeShadowEntry.TIMELINE -> "时间线"
+        TreeShadowEntry.ECHO_BOUND -> "绑定回声"
+        else -> "回声"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑$typeLabel") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "${entry.dateGroup} · ${formatTime(entry.createdAt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 8,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(content) },
+                enabled = content.isNotBlank(),
+            ) {
+                Text("保存")
             }
         },
         dismissButton = {

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -254,9 +254,27 @@ class WorkflowEngine(
         }
 
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
-        val result = actionRunner.run(def.actions, tools)
+        val result = actionRunner.run(def.actions, tools, workflowTag = "「${entity.name}」($workflowId)")
         val status = if (result.success) WorkflowRunStatus.SUCCESS else WorkflowRunStatus.FAILED
-        return persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)
+        val outcome = persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)
+
+        // E3 — 一次性工作流：仅在真实执行成功后生效（SKIPPED_* 不算触发）
+        if (status == WorkflowRunStatus.SUCCESS) {
+            when (def.oneShot) {
+                me.rerere.rikkahub.workflow.model.OneShotMode.DELETE_AFTER_FIRE -> {
+                    runCatching { repository.deleteCascading(workflowId) }
+                        .onFailure { Log.w(TAG, "one-shot delete failed for $workflowId", it) }
+                    Log.i(TAG, "one-shot workflow $workflowId fired — auto-deleted")
+                }
+                me.rerere.rikkahub.workflow.model.OneShotMode.ONCE_KEEP -> {
+                    runCatching { repository.setEnabled(workflowId, false) }
+                        .onFailure { Log.w(TAG, "one-shot disable failed for $workflowId", it) }
+                    Log.i(TAG, "one-shot workflow $workflowId fired — disabled (kept)")
+                }
+                null -> {}
+            }
+        }
+        return outcome
     }
 
     /**
@@ -385,10 +403,23 @@ class WorkflowActionRunner {
 
     data class RunResult(val success: Boolean, val error: String?, val summary: String)
 
-    suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
+    /**
+     * @param workflowTag E2 — 来源工作流标识（如 「查岗」ab12...）。执行 trigger_proactive_message
+     * 动作时兜底注入 args.workflow_id（若 LLM 未自带），让唤醒卡标注来源，方便 AI 追踪是哪条工作流唤醒了它。
+     */
+    suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>, workflowTag: String? = null): RunResult {
         val outputs = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
-            val argsJson = action.args.toString()
+            val effectiveArgs = if (action.tool == "trigger_proactive_message" && workflowTag != null) {
+                val obj = action.args
+                if (obj["workflow_id"] == null) {
+                    kotlinx.serialization.json.buildJsonObject {
+                        for ((k, v) in obj) put(k, v)
+                        put("workflow_id", kotlinx.serialization.json.JsonPrimitive(workflowTag))
+                    }
+                } else obj
+            } else action.args
+            val argsJson = effectiveArgs.toString()
             val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
@@ -399,7 +430,7 @@ class WorkflowActionRunner {
             val tool = availableTools.find { it.name == action.tool }
                 ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
             val out = try {
-                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }
+                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(effectiveArgs) }
             } catch (c: kotlinx.coroutines.CancellationException) {
                 // Don't swallow cancellation — re-throw so structured concurrency can
                 // unwind the fire (e.g. the engine scope is cancelled on shutdown). The

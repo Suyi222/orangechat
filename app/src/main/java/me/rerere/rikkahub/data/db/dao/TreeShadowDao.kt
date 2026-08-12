@@ -61,4 +61,12 @@ interface TreeShadowDao {
     /** 删除某日全部记录 */
     @Query("DELETE FROM tree_shadow WHERE date_group = :dateGroup")
     suspend fun deleteByDate(dateGroup: String)
+
+    /** 删除单条记录（按 id） */
+    @Query("DELETE FROM tree_shadow WHERE id = :id")
+    suspend fun deleteById(id: Int)
+
+    /** 删除挂在该记录下的绑定回声（级联删除：删时间线时清掉其下的感受） */
+    @Query("DELETE FROM tree_shadow WHERE parent_id = :id AND type = 'echo_bound'")
+    suspend fun deleteBoundEchoesOf(id: Int)
 }

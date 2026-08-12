@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.data.ai.tools.system
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
@@ -95,78 +96,156 @@ fun createSearchHistoryTool(ftsManager: MessageFtsManager?, database: AppDatabas
             return@Tool runBlocking { fetchFullMessage(db, nodeId, messageId) }
         }
 
-        // 关键词搜索模式
-        val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull
-            ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                put("success", false)
-                put("error", "keyword or (node_id + message_id) is required")
-            }.toString()))
-
-        val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10).coerceIn(1, 50)
-        val fullText = params["full_text"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        val dateFrom = params["date_from"]?.jsonPrimitive?.contentOrNull?.let {
-            try { LocalDate.parse(it) } catch (_: Exception) { null }
-        }
-        val dateTo = params["date_to"]?.jsonPrimitive?.contentOrNull?.let {
-            try { LocalDate.parse(it) } catch (_: Exception) { null }
-        }
-
-        try {
-            var results = mgr.search(keyword)
-
-            if (dateFrom != null || dateTo != null) {
-                results = results.filter { r ->
-                    val msgDate = r.updateAt.atZone(ZoneId.systemDefault()).toLocalDate()
-                    (dateFrom == null || !msgDate.isBefore(dateFrom)) &&
-                    (dateTo == null || !msgDate.isAfter(dateTo))
-                }
-            }
-
-            results = results.take(limit)
-
-            if (results.isEmpty()) {
-                return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                    put("success", true)
-                    put("total_found", 0)
-                    put("message", "No matching messages found in history.")
-                }.toString()))
-            }
-
-            val resultJson = buildJsonObject {
-                put("success", true)
-                put("total_found", results.size)
-                put("hint", if (fullText) "Full message content returned. Use this to recall exact context." else "Snippets returned. Use node_id+message_id with full_text=true to get complete message content for any result.")
-                putJsonArray("results") {
-                    results.forEach { r ->
-                        add(buildJsonObject {
-                            put("conversation", r.title)
-                            put("date", r.updateAt.toString().take(10))
-                            put("node_id", r.nodeId)
-                            put("message_id", r.messageId)
-                            if (fullText) {
-                                val fullContent = try {
-                                    runBlocking { getMessageContent(db, r.nodeId, r.messageId) }
-                                } catch (_: Exception) {
-                                    r.snippet
-                                }
-                                put("content", fullContent)
-                            } else {
-                                put("snippet", r.snippet)
-                            }
-                        })
-                    }
-                }
-            }
-
-            listOf(UIMessagePart.Text(resultJson.toString()))
-        } catch (e: Exception) {
-            listOf(UIMessagePart.Text(buildJsonObject {
-                put("success", false)
-                put("error", e.message ?: "Search failed")
-            }.toString()))
-        }
+        // 关键词搜索模式（全量历史，不限定助手）
+        runKeywordSearch(mgr, db, params, defaultAssistantId = null)
     }
 )
+
+/**
+ * 历史聊天记录搜索工具（按助手限定版）— AI 可检索【当前助手自己】的全部历史对话。
+ * 与 search_history 的区别：默认只搜当前助手（调用方注入 callerAssistantId）自己的对话，
+ * 回忆"我之前和用户聊过什么"更精准、不串台；也可显式传 assistant_id 搜索其他助手。
+ */
+fun createSearchChatHistoryTool(
+    ftsManager: MessageFtsManager?,
+    database: AppDatabase?,
+    callerAssistantId: String?,
+): Tool = Tool(
+    name = "search_chat_history",
+    description = """
+        Search historical chat messages of the CURRENT assistant (this assistant's own
+        conversations) using Chinese word segmentation (jieba). Use this when you need to
+        recall your own past conversations with the user - e.g. "did we ever talk about X?",
+        "what did I tell you about Y before?". Scope is automatically limited to this
+        assistant; pass an explicit assistant_id to search another assistant's history.
+        Returns ranked results with highlighted snippets. Use full_text=true to get complete
+        message content (higher token cost, only use when snippet is insufficient).
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                putJsonObject("keyword") {
+                    put("type", "string")
+                    put("description", "Search keyword or phrase. Use key nouns/concepts from user's question. E.g. '光遇', '考研政治', '桌面便签'. Supports Chinese word segmentation via jieba.")
+                }
+                putJsonObject("assistant_id") {
+                    put("type", "string")
+                    put("description", "Optional: override the default scope. When omitted, only the current assistant's own conversations are searched.")
+                }
+                putJsonObject("date_from") {
+                    put("type", "string")
+                    put("description", "Optional: filter results from this date (yyyy-MM-dd). Useful when user says 'last week' or 'in June'.")
+                }
+                putJsonObject("date_to") {
+                    put("type", "string")
+                    put("description", "Optional: filter results until this date (yyyy-MM-dd).")
+                }
+                putJsonObject("limit") {
+                    put("type", "integer")
+                    put("description", "Max results to return. Default 10, max 50. Lower = fewer tokens consumed.")
+                }
+                putJsonObject("full_text") {
+                    put("type", "boolean")
+                    put("description", "Return full message content instead of snippets. COSTS MORE TOKENS. Only use when snippet is too brief to understand. Default: false.")
+                }
+            },
+            required = listOf()
+        )
+    },
+    execute = { args ->
+        val mgr = ftsManager
+        val db = database
+        if (mgr == null || db == null) {
+            return@Tool listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", false)
+                put("error", "Search unavailable: database not initialized.")
+            }.toString()))
+        }
+        runKeywordSearch(mgr, db, args.jsonObject, defaultAssistantId = callerAssistantId)
+    }
+)
+
+/**
+ * 关键词搜索公共执行逻辑：search_history（全量）与 search_chat_history（按助手过滤）共用。
+ * 返回符合工具约定的 JSON 文本结果。
+ */
+private fun runKeywordSearch(
+    mgr: MessageFtsManager,
+    db: AppDatabase,
+    params: JsonObject,
+    defaultAssistantId: String?,
+): List<UIMessagePart> {
+    val keyword = params["keyword"]?.jsonPrimitive?.contentOrNull
+        ?: return listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", false)
+            put("error", "keyword is required")
+        }.toString()))
+
+    val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10).coerceIn(1, 50)
+    val fullText = params["full_text"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+    val dateFrom = params["date_from"]?.jsonPrimitive?.contentOrNull?.let {
+        try { LocalDate.parse(it) } catch (_: Exception) { null }
+    }
+    val dateTo = params["date_to"]?.jsonPrimitive?.contentOrNull?.let {
+        try { LocalDate.parse(it) } catch (_: Exception) { null }
+    }
+    val assistantId = params["assistant_id"]?.jsonPrimitive?.contentOrNull ?: defaultAssistantId
+
+    try {
+        var results = runBlocking { mgr.search(keyword, assistantId) }
+
+        if (dateFrom != null || dateTo != null) {
+            results = results.filter { r ->
+                val msgDate = r.updateAt.atZone(ZoneId.systemDefault()).toLocalDate()
+                (dateFrom == null || !msgDate.isBefore(dateFrom)) &&
+                (dateTo == null || !msgDate.isAfter(dateTo))
+            }
+        }
+
+        results = results.take(limit)
+
+        if (results.isEmpty()) {
+            return listOf(UIMessagePart.Text(buildJsonObject {
+                put("success", true)
+                put("total_found", 0)
+                put("message", "No matching messages found in history.")
+            }.toString()))
+        }
+
+        val resultJson = buildJsonObject {
+            put("success", true)
+            put("total_found", results.size)
+            put("hint", if (fullText) "Full message content returned. Use this to recall exact context." else "Snippets returned. Use node_id+message_id with full_text=true to get complete message content for any result.")
+            putJsonArray("results") {
+                results.forEach { r ->
+                    add(buildJsonObject {
+                        put("conversation", r.title)
+                        put("date", r.updateAt.toString().take(10))
+                        put("node_id", r.nodeId)
+                        put("message_id", r.messageId)
+                        if (fullText) {
+                            val fullContent = try {
+                                runBlocking { getMessageContent(db, r.nodeId, r.messageId) }
+                            } catch (_: Exception) {
+                                r.snippet
+                            }
+                            put("content", fullContent)
+                        } else {
+                            put("snippet", r.snippet)
+                        }
+                    })
+                }
+            }
+        }
+
+        return listOf(UIMessagePart.Text(resultJson.toString()))
+    } catch (e: Exception) {
+        return listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", false)
+            put("error", e.message ?: "Search failed")
+        }.toString()))
+    }
+}
 
 /**
  * 从数据库读取一条消息的完整文本内容

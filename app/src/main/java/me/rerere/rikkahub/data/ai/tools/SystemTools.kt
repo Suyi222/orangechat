@@ -21,11 +21,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.system.createTriggerProactiveMessageTool
 import me.rerere.rikkahub.data.ai.tools.system.createDeskNoteTool
 import me.rerere.rikkahub.data.ai.tools.system.createSearchHistoryTool
-import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateWriteTool
-import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateReadTool
-import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateEchoReadTool
-import me.rerere.rikkahub.data.ai.tools.treeshadow.createStateArchiveTool
-import me.rerere.rikkahub.data.service.TreeShadowService
+import me.rerere.rikkahub.data.ai.tools.system.createSearchChatHistoryTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
@@ -73,30 +69,31 @@ sealed class SystemToolOption {
     @Serializable @SerialName("proactive_trigger") data object ProactiveTrigger : SystemToolOption()
     @Serializable @SerialName("desk_note") data object DeskNote : SystemToolOption()
     @Serializable @SerialName("search_history") data object SearchHistory : SystemToolOption()
+    @Serializable @SerialName("search_chat_history") data object SearchChatHistory : SystemToolOption()
     @Serializable @SerialName("tts_exports") data object TtsExports : SystemToolOption()
-    @Serializable @SerialName("tree_shadow") data object TreeShadow : SystemToolOption()
 }
 
 class SystemTools(private val context: Context, private val settings: Settings) {
 
-    private val database: AppDatabase? by lazy {
-        try {
-            GlobalContext.get().get<AppDatabase>()
-        } catch (e: Exception) {
-            Log.e("SystemTools", "Failed to get AppDatabase from Koin", e)
-            null
-        }
+    /**
+     * 每次调用都从 Koin 重新解析数据库，避免首次解析失败后永久缓存 null
+     * （历史上出现过 "Search unavailable: database not initialized"）。
+     */
+    private fun resolveDatabase(): AppDatabase? = try {
+        GlobalContext.getOrNull()?.getOrNull()
+    } catch (e: Exception) {
+        Log.e("SystemTools", "Failed to get AppDatabase from Koin", e)
+        null
     }
 
-    private val ftsManager by lazy { database?.let { MessageFtsManager(it) } }
+    private fun searchHistoryTool(): Tool = run {
+        val db = resolveDatabase()
+        createSearchHistoryTool(db?.let { MessageFtsManager(it) }, db)
+    }
 
-    private val treeShadowService: TreeShadowService? by lazy {
-        try {
-            GlobalContext.get().get<TreeShadowService>()
-        } catch (e: Exception) {
-            Log.e("SystemTools", "Failed to get TreeShadowService from Koin", e)
-            null
-        }
+    private fun searchChatHistoryTool(callerAssistantId: String?): Tool = run {
+        val db = resolveDatabase()
+        createSearchChatHistoryTool(db?.let { MessageFtsManager(it) }, db, callerAssistantId)
     }
 
     companion object {
@@ -225,11 +222,6 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val fingerprintTool by lazy { me.rerere.rikkahub.data.ai.tools.local.fingerprintTool(context, me.rerere.rikkahub.ui.activity.BiometricPromptActivity.buffer) }
     private val triggerProactiveMessageTool by lazy { createTriggerProactiveMessageTool(context) }
     private val deskNoteTool by lazy { createDeskNoteTool(context) }
-    private val searchHistoryTool by lazy { createSearchHistoryTool(ftsManager, database) }
-    private val stateWriteTool by lazy { treeShadowService?.let { createStateWriteTool(it) } }
-    private val stateReadTool by lazy { treeShadowService?.let { createStateReadTool(it) } }
-    private val stateEchoReadTool by lazy { treeShadowService?.let { createStateEchoReadTool(it) } }
-    private val stateArchiveTool by lazy { treeShadowService?.let { createStateArchiveTool(it) } }
     private val listTtsExportsTool by lazy {
         Tool(
             name = "list_tts_exports",
@@ -262,7 +254,12 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         )
     }
 
-    fun getTools(enabledTools: Set<SystemToolOption>, recentMessages: List<UIMessage> = emptyList(), filesManager: FilesManager? = null): List<Tool> {
+    fun getTools(
+        enabledTools: Set<SystemToolOption>,
+        recentMessages: List<UIMessage> = emptyList(),
+        filesManager: FilesManager? = null,
+        callerAssistantId: String? = null,
+    ): List<Tool> {
         val t = mutableListOf<Tool>()
         if (SystemToolOption.Location in enabledTools) t.add(locationTool)
         if (SystemToolOption.Notifications in enabledTools) t.add(notificationsTool)
@@ -294,14 +291,9 @@ class SystemTools(private val context: Context, private val settings: Settings) 
         if (SystemToolOption.Fingerprint in enabledTools) t.add(fingerprintTool)
         if (SystemToolOption.ProactiveTrigger in enabledTools) t.add(triggerProactiveMessageTool)
         if (SystemToolOption.DeskNote in enabledTools) t.add(deskNoteTool)
-        if (SystemToolOption.SearchHistory in enabledTools) t.add(searchHistoryTool)
+        if (SystemToolOption.SearchHistory in enabledTools) t.add(searchHistoryTool())
+        if (SystemToolOption.SearchChatHistory in enabledTools) t.add(searchChatHistoryTool(callerAssistantId))
         if (SystemToolOption.TtsExports in enabledTools) t.add(listTtsExportsTool)
-        if (SystemToolOption.TreeShadow in enabledTools) {
-            stateWriteTool?.let { t.add(it) }
-            stateReadTool?.let { t.add(it) }
-            stateEchoReadTool?.let { t.add(it) }
-            stateArchiveTool?.let { t.add(it) }
-        }
         return t
     }
 }
