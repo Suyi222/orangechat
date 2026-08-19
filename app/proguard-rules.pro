@@ -23,6 +23,12 @@
 # keep kotlinx serializable classes
 -keep @kotlinx.serialization.Serializable class * {*;}
 
+# 插件环境 v2：Bridge v2 原生通道（addJavascriptInterface 注入 window.NativePluginBridge）。
+# 方法名被 JS 直接引用，release shrink 时必须保留 @JavascriptInterface 方法
+-keepclassmembers class me.rerere.rikkahub.plugin.webview.NativePluginBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
 # keep jlatexmath
 -keep class org.scilab.forge.jlatexmath.** {*;}
 

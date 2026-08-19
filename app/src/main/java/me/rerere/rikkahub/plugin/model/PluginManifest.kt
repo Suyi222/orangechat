@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -9,6 +9,38 @@ package me.rerere.rikkahub.plugin.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+
+/**
+ * 插件环境版本契约。
+ *
+ * 环境版本随隙光版本演进，插件 UI 可通过 Bridge.getEnvInfo() 探测当前环境能力，
+ * manifest 可通过 [PluginManifest.minEnvVersion] 声明最低环境要求。
+ *
+ * - "1.0": 初始环境（裸 WebView + iframe URL Bridge，无调试面、无渲染兜底）
+ * - "2.0": 2.4.1 起 —— WebChromeClient 日志面 / debug 远程调试 / Bridge v2 原生通道
+ *          （无 URL 长度上限）/ 渲染兜底 / getEnvInfo / 同步存储 / Toast / 事件通道
+ */
+object PluginEnv {
+    const val VERSION = "2.0"
+
+    /**
+     * 比较两个 "major.minor" 形式的环境版本号。
+     * 返回负数表示 a 低于 b，0 表示相等，正数表示 a 高于 b。
+     * 解析失败的版本号按 0 处理（宽容降级，不阻塞加载）。
+     */
+    fun compare(a: String?, b: String?): Int {
+        fun parse(v: String?): Pair<Int, Int> {
+            val parts = (v ?: "").trim().split(".")
+            val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+            val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            return major to minor
+        }
+        val (aMajor, aMinor) = parse(a)
+        val (bMajor, bMinor) = parse(b)
+        if (aMajor != bMajor) return aMajor - bMajor
+        return aMinor - bMinor
+    }
+}
 
 /**
  * 插件清单文件 (manifest.json) 对应的数据类
@@ -117,7 +149,32 @@ data class PluginManifest(
      * 空列表表示禁止所有网络请求（仅允许本地 dataStore 和内存库交互）。
      * 特殊值 "*" 表示允许所有域名（不推荐，仅用于开发调试）。
      */
-    val allowedHosts: List<String> = emptyList()
+    val allowedHosts: List<String> = emptyList(),
+
+    /**
+     * 插件 UI 行为选项（插件环境 v2 起支持，缺省全关）。
+     */
+    val uiOptions: PluginUIOptions? = null,
+
+    /**
+     * 插件要求的最低插件环境版本（如 "2.0"）。
+     * 环境过旧时插件详情页会显示提示，但不强制拦截加载——
+     * 插件 UI 应优先用 Bridge.getEnvInfo() 做能力探测与降级。
+     */
+    val minEnvVersion: String? = null
+)
+
+/**
+ * 插件 UI 行为选项（插件环境 v2）
+ */
+@Serializable
+data class PluginUIOptions(
+    /**
+     * 软件渲染（LAYER_TYPE_SOFTWARE）。
+     * 部分机型硬件加速下弹层/快速 DOM 更新不重绘（"数据到了画面没刷新"），
+     * 开启后用软件渲染兜底。代价是长列表滚动性能略降，故按需开启。
+     */
+    val softwareRender: Boolean = false
 )
 
 /**

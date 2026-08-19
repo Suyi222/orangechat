@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -313,6 +313,18 @@ private fun PluginInfoSection(plugin: PluginInfo) {
     }
     Spacer(modifier = Modifier.height(8.dp))
     Text(text = plugin.manifest.description, style = MaterialTheme.typography.bodyLarge)
+    // 插件环境 v2（C2）：插件声明的最低环境版本高于当前环境时给出提示（不拦截加载，
+    // 插件 UI 仍应优先用 Bridge.getEnvInfo() 自行探测降级）
+    plugin.manifest.minEnvVersion?.let { required ->
+        if (me.rerere.rikkahub.plugin.model.PluginEnv.compare(required, me.rerere.rikkahub.plugin.model.PluginEnv.VERSION) > 0) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "⚠️ 该插件需要插件环境 v$required，当前为 v${me.rerere.rikkahub.plugin.model.PluginEnv.VERSION}。建议升级隙光后再使用，部分功能可能不可用。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
     if (plugin.loadError != null) {
         Spacer(modifier = Modifier.height(8.dp))
         Text(

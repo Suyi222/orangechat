@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -19,14 +19,20 @@ import android.util.Base64
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.ValueCallback
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,6 +65,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
@@ -66,6 +76,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
+import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -74,6 +85,7 @@ import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.loader.LoadedPlugin
 import me.rerere.rikkahub.plugin.manager.PluginManager
+import me.rerere.rikkahub.plugin.model.PluginEnv
 import me.rerere.rikkahub.plugin.model.PluginHookConfig
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.repository.PluginRepository
@@ -140,6 +152,11 @@ fun PluginWebViewPage(
                             "if(typeof window.onTimerEnd === 'function') { window.onTimerEnd(); }",
                             null
                         )
+                        // 插件环境 v2（B4）：同时走通用事件通道，Bridge.on('timerEnd', fn) 也能收到
+                        webView?.evaluateJavascript(
+                            "if(typeof window.__bridgeEvent === 'function') { window.__bridgeEvent('timerEnd', '{}'); }",
+                            null
+                        )
                     }
                     overlayWebView?.post {
                         overlayWebView?.evaluateJavascript(
@@ -163,9 +180,25 @@ fun PluginWebViewPage(
                             "if(typeof window.onMusicCompleted === 'function') { window.onMusicCompleted(); } else { console.error('[DEBUG] onMusicCompleted not a function'); }",
                             null
                         )
+                        // 插件环境 v2（B4）：同时走通用事件通道
+                        webView?.evaluateJavascript(
+                            "if(typeof window.__bridgeEvent === 'function') { window.__bridgeEvent('musicCompleted', '{}'); }",
+                            null
+                        )
                     }
                 }
             }
+        }
+    }
+
+    // 插件环境 v2（B5）：插件页面键盘适配 adjustResize——输入法弹起时页面收缩不被遮挡；
+    // 页面销毁时恢复原模式，不影响宿主 Activity 的其他页面
+    val hostActivity = context as? Activity
+    val originalSoftInputMode = hostActivity?.window?.attributes?.softInputMode
+    DisposableEffect(Unit) {
+        hostActivity?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose {
+            originalSoftInputMode?.let { hostActivity.window?.setSoftInputMode(it) }
         }
     }
 
@@ -459,6 +492,10 @@ fun PluginWebViewPage(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         WebView(ctx).apply {
+                            // 插件环境 v2（A2）：debug 包允许 chrome://inspect 远程调试插件页；
+                            // release 包 BuildConfig.DEBUG=false 自动关闭，不暴露调试面
+                            WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+
                             settings.apply {
                                 @SuppressLint("SetJavaScriptEnabled")
                                 javaScriptEnabled = true
@@ -467,9 +504,20 @@ fun PluginWebViewPage(
                                 allowContentAccess = true
                                 mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                 databaseEnabled = true
+                                // 插件环境 v2（B5）：字号跟随系统字体缩放（80%~200% 保护带）
+                                textZoom = (ctx.resources.configuration.fontScale * 100).toInt().coerceIn(80, 200)
+                                // 插件环境 v2（B5）：视口规范化——尊重插件页声明的 viewport meta；
+                                // 未声明 viewport 的页面按设备宽度渲染，不再走 980px 虚拟视口缩放发虚
+                                useWideViewPort = true
                             }
 
-                            webViewClient = PluginWebViewClient(
+                            // 插件环境 v2（A4）：软件渲染兜底（manifest uiOptions.softwareRender 按需开启）——
+                            // 治部分机型硬件加速下弹层/快速 DOM 更新不重绘（"数据到了画面没刷新"）
+                            if (pluginInfo.manifest.uiOptions?.softwareRender == true) {
+                                setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                            }
+
+                            val pluginWebViewClient = PluginWebViewClient(
                                 pluginInfo = pluginInfo,
                                 dataStore = dataStore,
                                 pluginLoader = pluginLoader,
@@ -734,8 +782,20 @@ fun PluginWebViewPage(
                                     }
                                 }
                             )
+                            webViewClient = pluginWebViewClient
 
-                            // 处理 HTML <input type="file"> 文件选择
+                            // 插件环境 v2（A3）：Bridge v2 原生通道。JS 调用直达原生，不再走
+                            // iframe URL 传参——没有 URL 长度上限（根治 setData 大数据静默失败），
+                            // 也没有 iframe 创建/销毁开销。注入的 Bridge JS 会自动探测本通道，
+                            // 不可用时回落旧 iframe 通道，旧插件零改动。
+                            addJavascriptInterface(
+                                pluginWebViewClient.createNativeBridge(this),
+                                "NativePluginBridge"
+                            )
+
+                            // 处理 HTML <input type="file"> 文件选择 +
+                            // 插件环境 v2（A1）：console 日志面——JS 的 console.log/warn/error
+                            // 从此进入 logcat（TAG=PluginWebConsole），插件 JS 报错不再是盲盒
                             webChromeClient = object : WebChromeClient() {
                                 override fun onShowFileChooser(
                                     webView: WebView?,
@@ -755,6 +815,17 @@ fun PluginWebViewPage(
                                         htmlFileChooserLauncher.launch(arrayOf("*/*"))
                                     } else {
                                         htmlFileChooserLauncher.launch(acceptTypes)
+                                    }
+                                    return true
+                                }
+
+                                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                                    val msg = consoleMessage ?: return true
+                                    val text = "[${pluginInfo.manifest.id}] ${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})"
+                                    when (msg.messageLevel()) {
+                                        ConsoleMessage.MessageLevel.ERROR -> Log.e("PluginWebConsole", text)
+                                        ConsoleMessage.MessageLevel.WARNING -> Log.w("PluginWebConsole", text)
+                                        else -> Log.i("PluginWebConsole", text)
                                     }
                                     return true
                                 }
@@ -849,13 +920,50 @@ private class PluginWebViewClient(
     override fun onPageFinished(view: WebView?, url: String?) {
         super.onPageFinished(view, url)
         view?.evaluateJavascript(bridgeJavascript, null)
+        // 插件环境 v2（A4）：页面加载完成后主动触发一次重绘，缓解部分机型首帧不刷新
+        view?.postInvalidate()
     }
+
+    // 插件环境 v2（A1）：资源加载失败进 logcat——配合 onConsoleMessage，插件 UI 的
+    // 失败路径（JS 报错 / 资源 404 / http 错误）从此全部可见，不再静默
+    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+        if (request != null && error != null) {
+            Log.w(TAG, "WebView resource error: url=${request.url}, code=${error.errorCode}, desc=${error.description}")
+        }
+        super.onReceivedError(view, request, error)
+    }
+
+    override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+        if (request != null && errorResponse != null) {
+            Log.w(TAG, "WebView http error: url=${request.url}, status=${errorResponse.statusCode}")
+        }
+        super.onReceivedHttpError(view, request, errorResponse)
+    }
+
+    /**
+     * 插件环境 v2（A3）：创建 Bridge v2 原生通道对象，经 addJavascriptInterface 注入为
+     * window.NativePluginBridge。所有调用最终都汇入 [handleBridgeCallCore]（主线程执行，
+     * 与旧 iframe 通道完全同构），或走 [handleSyncBridgeCall]（同步 KV，桥线程执行）。
+     */
+    fun createNativeBridge(webView: WebView): NativePluginBridge =
+        NativePluginBridge(
+            webView = webView,
+            asyncDispatch = { wv, method, params -> handleBridgeCallCore(wv, method, params) },
+            syncDispatch = { method, params -> handleSyncBridgeCall(method, params) }
+        )
 
     private fun handleBridgeCall(webView: WebView, url: String) {
         val uri = Uri.parse(url)
         val method = uri.host ?: return
         val params = uri.queryParameterNames.associateWith { uri.getQueryParameter(it) ?: "" }
+        handleBridgeCallCore(webView, method, params)
+    }
 
+    /**
+     * Bridge 调用统一分发：旧 iframe 通道与 v2 原生通道的公共处理器。
+     * 必须在主线程调用（原生通道入口已 post 到主线程）。
+     */
+    private fun handleBridgeCallCore(webView: WebView, method: String, params: Map<String, String>) {
         when (method) {
             "getPluginConfig" -> {
                 CoroutineScope(Dispatchers.IO).launch {
@@ -1291,6 +1399,92 @@ private class PluginWebViewClient(
                     )
                 }
             }
+
+            // ===== 插件环境 v2 新增 =====
+
+            // B1：环境能力探测——插件不再盲写，可按 capabilities 降级
+            "getEnvInfo" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val transport = if (params["__transport"] == "native") "native" else "iframe"
+                val envInfo = buildJsonObject {
+                    put("envVersion", me.rerere.rikkahub.plugin.model.PluginEnv.VERSION)
+                    put("appVersion", BuildConfig.VERSION_NAME)
+                    put("pluginId", pluginInfo.manifest.id)
+                    put("pluginName", pluginInfo.manifest.name)
+                    put("transport", transport)
+                    put("capabilities", kotlinx.serialization.json.buildJsonArray {
+                        add(kotlinx.serialization.json.JsonPrimitive("async_bridge"))
+                        add(kotlinx.serialization.json.JsonPrimitive("sync_storage"))
+                        add(kotlinx.serialization.json.JsonPrimitive("toast"))
+                        add(kotlinx.serialization.json.JsonPrimitive("events"))
+                        add(kotlinx.serialization.json.JsonPrimitive("console_log"))
+                    })
+                }
+                val result = Json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), envInfo)
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', $result);", null
+                    )
+                }
+            }
+
+            // B3：原生 Toast 轻反馈
+            "showToast" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val message = params["message"] ?: ""
+                if (message.isNotBlank()) {
+                    Toast.makeText(webView.context, message, Toast.LENGTH_SHORT).show()
+                }
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:true});", null
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 插件环境 v2（B2）：同步 Bridge 调用处理。在 NativePluginBridge 的桥线程上执行，
+     * 因此只允许无 UI、线程安全的操作（SharedPreferences 读写）。返回值是 JSON 字符串，
+     * 由 JS 侧同步接收——这是 getDataSync/setDataSync 的底层实现，
+     * 用于消灭「把 Promise 当同步用」这类高频误用。
+     */
+    private fun handleSyncBridgeCall(method: String, params: Map<String, String>): String {
+        return try {
+            when (method) {
+                "getData" -> {
+                    val key = params["key"] ?: ""
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    val value = dataStore.getData(key)
+                    if (value != null) {
+                        """{"success":true,"value":${Json.encodeToString(kotlinx.serialization.json.JsonPrimitive.serializer(), kotlinx.serialization.json.JsonPrimitive(value))}}"""
+                    } else {
+                        """{"success":true,"value":null}"""
+                    }
+                }
+                "setData" -> {
+                    val key = params["key"] ?: ""
+                    val value = params["value"] ?: ""
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    dataStore.setData(key, value)
+                    """{"success":true}"""
+                }
+                "deleteData" -> {
+                    val key = params["key"] ?: ""
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    dataStore.deleteData(key)
+                    """{"success":true}"""
+                }
+                "listData" -> {
+                    val keys = dataStore.listData()
+                    """{"success":true,"keys":${org.json.JSONArray(keys).toString()}}"""
+                }
+                else -> """{"success":false,"error":"sync bridge does not support method: $method"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Sync bridge call failed: method=$method", e)
+            """{"success":false,"error":${Json.encodeToString(kotlinx.serialization.json.JsonPrimitive.serializer(), kotlinx.serialization.json.JsonPrimitive(e.message ?: "Unknown error"))}}"""
         }
     }
 
@@ -1451,6 +1645,73 @@ private class PluginWebViewClient(
     }
 }
 
+/**
+ * 插件环境 v2（A3）：Bridge v2 原生通道。
+ *
+ * 通过 addJavascriptInterface 注入为 window.NativePluginBridge：
+ * - [call]：异步调用。JS 传 (method, paramsJson)，本对象 post 回主线程后走与
+ *   iframe 通道完全相同的分发逻辑；结果仍经 window.__bridgeResult(callbackId, result)
+ *   回调，因此插件侧 Promise API 完全不变。
+ * - [callSync]：同步调用（桥线程执行，立即返回 JSON 字符串），仅用于 KV 存储等
+ *   无 UI 的线程安全操作，支撑 Bridge.getDataSync/setDataSync。
+ *
+ * 注意：本类方法名被 @JavascriptInterface 暴露给 JS，release 混淆需保留
+ * （已在 proguard-rules.pro 添加 keep 规则）。
+ */
+class NativePluginBridge(
+    private val webView: WebView,
+    private val asyncDispatch: (webView: WebView, method: String, params: Map<String, String>) -> Unit,
+    private val syncDispatch: (method: String, params: Map<String, String>) -> String
+) {
+    companion object {
+        private const val TAG = "NativePluginBridge"
+    }
+
+    @JavascriptInterface
+    fun call(method: String, paramsJson: String) {
+        val params = parseParams(paramsJson)
+        webView.post {
+            try {
+                asyncDispatch(webView, method, params)
+            } catch (e: Exception) {
+                Log.e(TAG, "Native bridge async dispatch failed: method=$method", e)
+                val callbackId = params["callbackId"] ?: ""
+                if (callbackId.isNotEmpty()) {
+                    val errMsg = e.message?.replace("\\", "\\\\")?.replace("'", "\\'") ?: "Unknown error"
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:false,error:'$errMsg'});", null
+                    )
+                }
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun callSync(method: String, paramsJson: String): String {
+        return try {
+            syncDispatch(method, parseParams(paramsJson))
+        } catch (e: Exception) {
+            Log.e(TAG, "Native bridge sync dispatch failed: method=$method", e)
+            """{"success":false,"error":"${e.message?.replace("\"", "\\\"") ?: "Unknown error"}"}"""
+        }
+    }
+
+    private fun parseParams(paramsJson: String): Map<String, String> {
+        return try {
+            val obj = org.json.JSONObject(paramsJson.ifBlank { "{}" })
+            val map = mutableMapOf<String, String>()
+            obj.keys().forEach { key ->
+                val value = obj.opt(key)
+                map[key] = if (value == null || value == org.json.JSONObject.NULL) "" else value.toString()
+            }
+            map
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse native bridge params: ${e.message}")
+            emptyMap()
+        }
+    }
+}
+
 private const val bridgeJavascript = """
 (function() {
     if (window.Bridge) return;
@@ -1469,10 +1730,36 @@ private const val bridgeJavascript = """
         }
     };
 
+    // ===== 插件环境 v2：传输层 =====
+    // 优先走原生通道（window.NativePluginBridge，无 URL 长度上限、无 iframe 开销）；
+    // 原生通道不可用或抛错时自动回落旧 iframe 通道——旧插件零改动，行为下限不变。
+    function hasNativeBridge() {
+        try {
+            return !!(window.NativePluginBridge && window.NativePluginBridge.call);
+        } catch (e) { return false; }
+    }
+
     function bridgeCall(method, params) {
         return new Promise(function(resolve, reject) {
             var callbackId = 'cb_' + (++window.__bridgeResultId);
             window.__bridgeCallbacks[callbackId] = resolve;
+
+            if (hasNativeBridge()) {
+                try {
+                    var payload = {};
+                    if (params) {
+                        for (var nk in params) {
+                            if (params.hasOwnProperty(nk)) payload[nk] = String(params[nk]);
+                        }
+                    }
+                    payload.callbackId = callbackId;
+                    payload.__transport = 'native';
+                    window.NativePluginBridge.call(method, JSON.stringify(payload));
+                    return;
+                } catch (e) {
+                    console.warn('Native bridge call failed, falling back to iframe transport:', e);
+                }
+            }
 
             var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId);
             for (var key in params) {
@@ -1578,13 +1865,74 @@ private const val bridgeJavascript = """
         },
         musicGetProgress: function() {
             return bridgeCall('musicGetProgress', {});
+        },
+
+        // ===== 插件环境 v2 新增 API =====
+
+        // B1：环境能力探测。返回 {envVersion, appVersion, pluginId, pluginName,
+        // transport, capabilities[]}——新插件建议开局先探测，按能力降级
+        getEnvInfo: function() {
+            return bridgeCall('getEnvInfo', {});
+        },
+
+        // B3：原生 Toast 轻反馈
+        showToast: function(message) {
+            return bridgeCall('showToast', {message: String(message == null ? '' : message)});
+        },
+
+        // B4：订阅 App → UI 事件（如 'timerEnd' / 'musicCompleted'）。
+        // 旧的 window.onTimerEnd / window.onMusicCompleted 继续有效，二选一即可
+        on: function(event, handler) {
+            if (!event || typeof handler !== 'function') return;
+            if (!window.__bridgeEventHandlers) window.__bridgeEventHandlers = {};
+            if (!window.__bridgeEventHandlers[event]) window.__bridgeEventHandlers[event] = [];
+            window.__bridgeEventHandlers[event].push(handler);
+        },
+
+        // B2：同步 KV 读写（仅原生通道可用；旧环境调用会抛错，
+        // 建议先 getEnvInfo 探测 capabilities 含 'sync_storage' 再用）。
+        // 返回值/参数语义与 getData/setData 一致，但立即完成，无 Promise
+        getDataSync: function(key) {
+            if (!hasNativeBridge() || !window.NativePluginBridge.callSync) {
+                throw new Error('Bridge.getDataSync requires plugin env 2.0 native bridge');
+            }
+            var r = JSON.parse(window.NativePluginBridge.callSync('getData', JSON.stringify({key: key})));
+            if (!r.success) throw new Error(r.error || 'getDataSync failed');
+            return (r.value === undefined || r.value === null) ? null : r.value;
+        },
+        setDataSync: function(key, value) {
+            if (!hasNativeBridge() || !window.NativePluginBridge.callSync) {
+                throw new Error('Bridge.setDataSync requires plugin env 2.0 native bridge');
+            }
+            var r = JSON.parse(window.NativePluginBridge.callSync('setData', JSON.stringify({key: key, value: String(value)})));
+            if (!r.success) throw new Error(r.error || 'setDataSync failed');
+            return true;
+        },
+        deleteDataSync: function(key) {
+            if (!hasNativeBridge() || !window.NativePluginBridge.callSync) {
+                throw new Error('Bridge.deleteDataSync requires plugin env 2.0 native bridge');
+            }
+            var r = JSON.parse(window.NativePluginBridge.callSync('deleteData', JSON.stringify({key: key})));
+            return r.success === true;
+        }
+    };
+
+    // B4：通用事件分发入口（由 App 侧 evaluateJavascript 调用）
+    if (!window.__bridgeEventHandlers) window.__bridgeEventHandlers = {};
+    window.__bridgeEvent = function(name, dataJson) {
+        var list = window.__bridgeEventHandlers[name];
+        if (!list || !list.length) return;
+        var data = null;
+        try { data = dataJson ? JSON.parse(dataJson) : null; } catch (e) {}
+        for (var i = 0; i < list.length; i++) {
+            try { list[i](data); } catch (e) { console.error('Bridge event handler error (' + name + '):', e); }
         }
     };
 
     window.onTimerEnd = window.onTimerEnd || function() {};
     window.onMusicCompleted = window.onMusicCompleted || function() {};
 
-    console.log('Bridge API initialized');
+    console.log('Bridge API initialized (env ' + (hasNativeBridge() ? '2.0 native' : '1.0 iframe') + ')');
 })();
 """
 
