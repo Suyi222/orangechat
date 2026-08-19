@@ -30,9 +30,10 @@ RikkaHub（原作者 RE 开源）
 
 - **尊重前人**：原作者 RE、橘瓣开发者 sue1231513 的代码、注释、署名全部原样保留（AGPL v3 开源协议）
 - **新增内容**：小园丁自己加的功能与文件，用「隙光」命名
+- **2.4.1 新功能**：🧩 插件环境 v2 —— Bridge v2 原生通道（无 URL 长度上限，异常自动回落）· 📋 JS console 进 logcat + debug 包 chrome://inspect · 🖥️ 渲染兜底（softwareRender）· 🚀 新 Bridge API（getEnvInfo / 同步存储 / showToast / Bridge.on 事件）· 📜 minEnvVersion 环境契约（现有插件零改动）
 - **2.4.0 新功能**：🌲 树影下 2.0（删改/读往日/自动记录开关组）· 🧠 tree_heart 活化（开场浮现/自动落账/自动见证）· 🔍 历史检索修复 + search_chat_history · 👻 工作流一次性模式 + 暴露开关 · 🍊 修 Coil 崩溃
 - **2.3.0 新功能**：🌲 树影下状态系统 · 🕐 随机时间触发器 · 🛡️ 后台工具总开关 · 🔔 工作流主动唤醒卡
-- 📝 更新说明：[docs/RELEASE-2026-08-12-xiguang-2.4.0.md](docs/RELEASE-2026-08-12-xiguang-2.4.0.md)（2.4.0）｜ [docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)（2.3.0）
+- 📝 更新说明：[docs/RELEASE-2026-08-19-xiguang-2.4.1.md](docs/RELEASE-2026-08-19-xiguang-2.4.1.md)（2.4.1）｜ [docs/RELEASE-2026-08-12-xiguang-2.4.0.md](docs/RELEASE-2026-08-12-xiguang-2.4.0.md)（2.4.0）｜ [docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)（2.3.0）
 - 🛠️ 实现文档：[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
 - 🔀 开发分支：`feature/workflow-widget-v2`
 
@@ -254,7 +255,7 @@ exports.say_hello = say_hello;
 - **promptTemplate** — 为插件添加系统提示词模板
 - **hooks** — 监听 `message_sent`、`message_received`、`daily_cron` 事件
 - **ui** — 声明式 UI，App 渲染为原生 Compose Material 3 界面
-- **customPageWebView** — 自定义 WebView 页面
+- **customPageWebView** — 自定义 WebView 页面；页面内 `window.Bridge` 自 2.4.1 起升级为插件环境 v2（原生通道无长度上限 / `getEnvInfo()` 能力探测 / `getDataSync` 等同步存储 / `Bridge.on` 事件），可用 manifest `minEnvVersion` 声明最低环境版本
 
 > 💡 安装内置的 **插件开发指南** 插件后，AI 可查阅完整文档（quickstart/manifest/mainjs/sandbox/hooks/declarative_ui 等 13 个主题）
 
