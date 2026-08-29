@@ -237,7 +237,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 item(
                     leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
                     headlineContent = { Text("自动记录对话") },
-                    supportingContent = { Text("开启后系统会在章节结束/闲置时自动总结对话写入时间线；记录者默认「系统+助手」，章节长度默认 44 轮") },
+                    supportingContent = { Text("开启后系统会在章节结束/闲置时自动总结对话写入时间线；记录者默认「系统+助手」，章节长度默认 44 轮。生效前提：在 助手 → 本地工具 中开启 🌳 树影下") },
                     trailingContent = {
                         Switch(
                             checked = systemToolsSetting.autoRecordEnabled,
@@ -289,27 +289,26 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         }
                     },
                 )
-                if (systemToolsSetting.autoRecordChapterEnabled) {
-                    item(
-                        headlineContent = { Text("章节长度 N（轮）") },
-                        supportingContent = {
-                            Text("每 N 轮对话记一条时间线。独立于模型上下文窗口，改 30/60/100 都可以")
-                            OutlinedTextField(
-                                value = systemToolsSetting.autoRecordChapterN.toString(),
-                                onValueChange = { input ->
-                                    val n = input.toIntOrNull()
-                                    if (n != null && n > 0) {
-                                        updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterN = n))
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                singleLine = true,
-                                shape = MaterialTheme.shapes.small,
-                                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
-                            )
-                        },
-                    )
-                }
+                // N 输入框恒显：开关只控制章节轮转是否启用，不控制输入框可见性（2.4.2 修「默认找不到」）
+                item(
+                    headlineContent = { Text("章节长度 N（轮）") },
+                    supportingContent = {
+                        Text("每 N 轮对话记一条时间线。独立于模型上下文窗口，改 30/60/100 都可以")
+                        OutlinedTextField(
+                            value = systemToolsSetting.autoRecordChapterN.toString(),
+                            onValueChange = { input ->
+                                val n = input.toIntOrNull()
+                                if (n != null && n > 0) {
+                                    updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterN = n))
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            singleLine = true,
+                            shape = MaterialTheme.shapes.small,
+                            colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                        )
+                    },
+                )
                 if (systemToolsSetting.autoRecordIdleEnabled) {
                     item(
                         headlineContent = { Text("闲置阈值（分钟）") },
