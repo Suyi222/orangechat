@@ -33,6 +33,8 @@ import androidx.core.content.ContextCompat
 import coil3.SingletonImageLoader
 import coil3.target.ImageViewTarget
 import coil3.request.ImageRequest
+import coil3.request.allowHardware
+import coil3.request.crossfade
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -312,6 +314,10 @@ class FloatingBubbleService : Service() {
                 val request = ImageRequest.Builder(this@FloatingBubbleService)
                     .data(url)
                     .target(ImageViewTarget(imageView))
+                    // 悬浮窗在 vivo 等机型上走软件渲染，硬件位图会抛
+                    // "Software rendering doesn't support hardware bitmaps"——请求级关闭硬件位图与过渡
+                    .allowHardware(false)
+                    .crossfade(false)
                     .build()
                 loader.execute(request)
             }.onFailure {
