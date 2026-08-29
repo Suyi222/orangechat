@@ -9,6 +9,7 @@ package me.rerere.rikkahub.ui.activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -110,6 +111,17 @@ class SafeModeActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(stringResource(R.string.safe_mode_switch_assistant))
+                        }
+
+                        // 2.4.2：崩溃后不再只能返回键退出重进，一键进主界面
+                        OutlinedButton(
+                            onClick = {
+                                startActivity(Intent(this@SafeModeActivity, me.rerere.rikkahub.RouteActivity::class.java))
+                                finish()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("进入主界面")
                         }
 
                         if (stackTrace != null) {
