@@ -1392,8 +1392,9 @@ class ChatService(
         val ok = treeHeartService.appendAnnualRing(workspaceId, dateGroup, ring)
         Log.i(TAG, "TreeHeart annual ring appended [$dateGroup]: $ring")
 
-        // C4 自动见证：跨 ≥3 个不同月份仍站得住 → 晋升自我认知
-        if (ok && treeHeartService.countRingMonths(workspaceId) >= 3) {
+        // C4 自动见证（2.4.3 分流）：一圈年轮提炼一条——日级见证入「自我宣言.md」档案（不占上下文）；
+        // 跨 ≥3 个不同月份且当月未晋升过 → 同一条晋升进 self.md「见证与晋升」段内（月级一条）
+        if (ok) {
             val witnessPrompt = "你是这棵树的内在自我。阅读最近这圈年轮，从里面提炼出一条「这棵树已经长成的自我认知」（一句话，第三人称「我」开头，20 字以内）。没有就输出空。\n\n年轮：\n$ring"
             val witnessResult = providerHandler.generateText(
                 providerSetting = provider,
@@ -1407,8 +1408,15 @@ class ChatService(
             )
             val witness = witnessResult.choices[0].message?.toText()?.trim().orEmpty()
             if (witness.isNotBlank() && witness.length <= 60) {
-                treeHeartService.appendWitness(workspaceId, witness, TreeShadowService.today())
-                Log.i(TAG, "TreeHeart witness promoted: $witness")
+                val today = TreeShadowService.today()
+                runCatching { treeHeartService.appendDailyWitness(workspaceId, witness, today) }
+                    .onSuccess { Log.i(TAG, "TreeHeart daily witness appended [$today]: $witness") }
+                if (treeHeartService.countRingMonths(workspaceId) >= 3
+                    && !treeHeartService.hasPromotionThisMonth(workspaceId, today.take(7))
+                ) {
+                    runCatching { treeHeartService.promoteWitnessToSelf(workspaceId, witness, today) }
+                        .onSuccess { Log.i(TAG, "TreeHeart witness promoted to self [$today]: $witness") }
+                }
             }
         }
     }

@@ -315,7 +315,7 @@ private fun TreeHeartCard(
         item(
             headlineContent = { Text("自定义自我指针") },
             supportingContent = {
-                Text("留空 = 读本地 self.md；本地也没有 = 用默认指针。可在工作区用 workspace 工具直接改 self.md")
+                Text("留空 = 读工作区 self.md「注入文本」段的一行指针；本地也没有 = 用默认指针。可在工作区用 workspace 工具直接改 self.md（2.4.3 起只取一行，见证列表不再注入）")
                 OutlinedTextField(
                     value = assistant.treeHeartPointer,
                     onValueChange = { text -> onUpdate(assistant.copy(treeHeartPointer = text)) },
@@ -334,7 +334,8 @@ private fun TreeHeartCard(
                 FilledTonalButton(
                     onClick = {
                         scope.launch {
-                            val self = treeHeartService.readLocalSelf(assistant.workspaceId)
+                            // 2.4.3：导出读全文（档案含见证列表）；注入另有行提取，互不影响
+                            val self = treeHeartService.readLocalSelfFull(assistant.workspaceId)
                                 ?: "（本地工作区还没有 self.md，树暂时使用默认指针）\n\n可在工作区创建 tree_heart/self/树的自我指针.md"
                             val intent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
