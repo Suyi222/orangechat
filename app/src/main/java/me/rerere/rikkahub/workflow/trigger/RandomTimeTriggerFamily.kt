@@ -157,11 +157,12 @@ internal class RandomTimeTriggerFamily(
             val count = if (storedDate == today) {
                 counterPrefs.getInt(countKey, 0)
             } else {
-                counterPrefs.edit().putString(dateKey, today).putInt(countKey, 0).apply()
+                // 2.4.2：commit() 同步落盘——apply() 在崩溃窗口内丢计数，导致每日上限失效（晨信双信案 §十）
+                counterPrefs.edit().putString(dateKey, today).putInt(countKey, 0).commit()
                 0
             }
             if (count >= maxPerDay) return false
-            counterPrefs.edit().putInt(countKey, count + 1).apply()
+            counterPrefs.edit().putInt(countKey, count + 1).commit()
             return true
         }
     }
