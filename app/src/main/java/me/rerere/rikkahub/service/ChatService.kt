@@ -1310,7 +1310,7 @@ class ChatService(
                 return
             }
         val provider = model.findProvider(settings.providers) ?: run {
-            Log.w("TreeShadowSummary", "summarizeSegment skip: provider missing for model=${model.model} (conversationId=$conversationId)")
+            Log.w("TreeShadowSummary", "summarizeSegment skip: provider missing for model=${model.modelId} (conversationId=$conversationId)")
             return
         }
         val providerHandler = providerManager.getProviderByType(provider)
