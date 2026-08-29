@@ -200,6 +200,15 @@ class SettingsStore(
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
+                // 2.4.2：读盘失败不再无声降级——留痕 + 标记，下次启动给用户一次性提示
+                Log.e("PreferencesStore", "settings DataStore load failed, falling back to defaults", exception)
+                runCatching {
+                    context.applicationContext
+                        .getSharedPreferences("crash_handler", Context.MODE_PRIVATE)
+                        .edit()
+                        .putBoolean("settings_load_failed", true)
+                        .apply()
+                }
                 emit(emptyPreferences())
             } else {
                 throw exception

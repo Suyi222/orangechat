@@ -208,6 +208,13 @@ class RouteActivity : ComponentActivity() {
             return
         }
 
+        // 2.4.2：设置读盘失败一次性提示（标记由 PreferencesStore catch 写入）
+        val crashPrefs = getSharedPreferences("crash_handler", MODE_PRIVATE)
+        if (crashPrefs.getBoolean("settings_load_failed", false)) {
+            crashPrefs.edit().remove("settings_load_failed").apply()
+            Toast.makeText(this, "设置读取失败，部分配置可能已重置（存储异常）", Toast.LENGTH_LONG).show()
+        }
+
         // 根据设置自动启动保活服务
         try {
             if (settingsStore.settingsFlow.value.keepAliveEnabled) {

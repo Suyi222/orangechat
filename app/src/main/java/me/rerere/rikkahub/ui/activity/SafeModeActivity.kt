@@ -99,6 +99,29 @@ class SafeModeActivity : ComponentActivity() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
+                        // 2.4.2：设置读盘失败提示（一次性，显示后清除标记）
+                        val settingsLoadFailed = remember {
+                            val prefs = this@SafeModeActivity.getSharedPreferences("crash_handler", Context.MODE_PRIVATE)
+                            val failed = prefs.getBoolean("settings_load_failed", false)
+                            if (failed) prefs.edit().remove("settings_load_failed").apply()
+                            failed
+                        }
+                        if (settingsLoadFailed) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                )
+                            ) {
+                                Text(
+                                    text = "设置读取失败，部分配置可能已重置（存储异常）。如需找回，可用备份恢复或检查手机存储。",
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                        }
+
                         Text(
                             text = stringResource(
                                 R.string.safe_mode_current_assistant,
