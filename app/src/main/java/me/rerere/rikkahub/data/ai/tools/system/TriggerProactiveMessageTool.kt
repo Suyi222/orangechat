@@ -74,6 +74,7 @@ fun createTriggerProactiveMessageTool(context: Context): Tool = Tool(
         }
         try {
             context.startForegroundService(intent)
+            android.util.Log.i("ProactiveTrace", "tool trigger_proactive_message invoked, workflowId=$workflowId, messageLen=${message.length}")
             listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", true)
                 put("message", "Proactive message triggered: $message")

@@ -460,6 +460,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
         val isFromDeviceEvent = deviceEventContext != null && !isFromWorkflow
+        // 2.4.2 全链路埋点：主动消息链路断点定位用（零行为变化）。过滤：adb logcat -s ProactiveTrace
+        Log.i(
+            "ProactiveTrace",
+            "entry source=${if (isFromWorkflow) "workflow" else if (isFromDeviceEvent) "device_event" else "scheduled_or_gateway"} force=$isForceTrigger"
+        )
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else if (isFromWorkflow) " from workflow wakeup" else " from gateway poll"}, will skip min interval check")
         }
@@ -478,6 +483,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 激进模式设备事件触发、工作流主动唤醒时，不检查主动消息开关（可独立工作）
                 if (!proactiveSetting.enabled && !isFromDeviceEvent && !isFromWorkflow) {
+                    Log.i("ProactiveTrace", "skip: proactive disabled (and not force source)")
                     stopSelf()
                     return@launch
                 }
@@ -502,6 +508,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                     if (skipDueToInterval) {
                         Log.d(TAG, "Duplicate trigger within min interval, skipping")
+                        Log.i("ProactiveTrace", "skip: within min interval")
                         ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                         stopSelf()
                         return@launch
@@ -518,9 +525,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     ?: settings.getCurrentAssistant()
                 val assistantUuid = assistant.id
                 val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
+                Log.i(
+                    "ProactiveTrace",
+                    "assistant=${assistant.id} cfgAssistantId=${proactiveSetting.assistantId} model=${model?.modelId ?: "null"}"
+                )
 
                 if (model == null) {
                     Log.e(ProactiveMessageService.TAG, "No model found for proactive message")
+                    Log.i("ProactiveTrace", "skip: model null")
                     ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                     stopSelf()
                     return@launch
@@ -549,6 +561,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 理由：等对方生成结束后，上下文（用户可能已在聊别的话题）大概率已过时，硬等没有意义。
                 val myJob = coroutineContext[Job]
                 if (myJob == null || !chatService.getOrCreateSession(conversationId).tryClaimGeneration(myJob)) {
+                    Log.i("ProactiveTrace", "skip: claim failed (already generating), conversationId=$conversationId")
                     Log.d(
                         TAG,
                         "Skip proactive trigger: session $conversationId already generating " +
@@ -649,6 +662,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val providerSetting = model.findProvider(settings.providers)
                 if (providerSetting == null) {
                     Log.e(ProactiveMessageService.TAG, "No provider found for proactive message")
+                    Log.i("ProactiveTrace", "skip: provider null for model=${model.modelId}")
                     ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                     stopSelf()
                     return@launch
@@ -686,6 +700,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     if (!hasSchema) Log.w(TAG, "Tool '${t.name}' has NULL parameters schema — may cause API rejection")
                 }
 
+                Log.i(
+                    "ProactiveTrace",
+                    "generate start: conversationId=$conversationId model=${model.modelId} history=${historyMessages.size} tools=${tools.size}"
+                )
                 // 执行生成，支持工具调用
                 val (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
                     conversationId = conversationId,
@@ -727,6 +745,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls, shouldJump=$shouldJump")
+                Log.i(
+                    "ProactiveTrace",
+                    "generate done: conversationId=$conversationId replyLen=${replyText.length} pass=${rawText.contains("[PASS]")} hasToolCalls=$hasToolCalls"
+                )
 
                 if (replyText.isBlank() || rawText.contains("[PASS]")) {
                     // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
@@ -820,9 +842,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     "Proactive generation cancelled (likely user started a new message), " +
                         "conversationId=$conversationId"
                 )
+                Log.i("ProactiveTrace", "cancelled: user message interrupted, conversationId=$conversationId")
                 throw e
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
+                Log.i("ProactiveTrace", "error: ${e::class.simpleName}: ${e.message}")
                 // 如果是 API 返回的 HTTP 错误, 把原始错误体也打出来便于定位
                 val cause = e.cause
                 if (cause != null) {
