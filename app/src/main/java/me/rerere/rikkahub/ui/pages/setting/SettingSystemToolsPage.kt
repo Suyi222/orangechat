@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -268,58 +269,42 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 item(
                     headlineContent = { Text("记录者") },
                     supportingContent = {
-                        Text("系统自动 = 确定性总结（可靠）；助手主动 = AI 自己用工具记录（活）；两者都要 = 系统兜底 + 助手可补充（推荐）")
-                        @OptIn(ExperimentalLayoutApi::class)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        ) {
-                            val recorderOptions = listOf(
-                                "system" to "系统自动",
-                                "agent" to "助手主动",
-                                "both" to "两者都要",
-                            )
-                            recorderOptions.forEach { (value, label) ->
-                                FilterChip(
-                                    selected = systemToolsSetting.autoRecordRecorder == value,
-                                    onClick = { updateSystemToolsSetting(systemToolsSetting.copy(autoRecordRecorder = value)) },
-                                    label = { Text(label) },
+                        // M3 ListItem 槽位只排版单一根节点：Text 与控件必须包进同一个 Column，否则控件被静默丢弃（2.4.4 修）
+                        Column {
+                            Text("系统自动 = 确定性总结（可靠）；助手主动 = AI 自己用工具记录（活）；两者都要 = 系统兜底 + 助手可补充（推荐）")
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            ) {
+                                val recorderOptions = listOf(
+                                    "system" to "系统自动",
+                                    "agent" to "助手主动",
+                                    "both" to "两者都要",
                                 )
+                                recorderOptions.forEach { (value, label) ->
+                                    FilterChip(
+                                        selected = systemToolsSetting.autoRecordRecorder == value,
+                                        onClick = { updateSystemToolsSetting(systemToolsSetting.copy(autoRecordRecorder = value)) },
+                                        label = { Text(label) },
+                                    )
+                                }
                             }
                         }
                     },
                 )
-                // N 输入框恒显：开关只控制章节轮转是否启用，不控制输入框可见性（2.4.2 修「默认找不到」）
+                // N 输入框恒显：开关只控制章节轮转是否启用，不控制输入框可见性（2.4.2 修「默认找不到」）；2.4.4 包 Column 修渲染
                 item(
                     headlineContent = { Text("章节长度 N（轮）") },
                     supportingContent = {
-                        Text("每 N 轮对话记一条时间线。独立于模型上下文窗口，改 30/60/100 都可以")
-                        OutlinedTextField(
-                            value = systemToolsSetting.autoRecordChapterN.toString(),
-                            onValueChange = { input ->
-                                val n = input.toIntOrNull()
-                                if (n != null && n > 0) {
-                                    updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterN = n))
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            singleLine = true,
-                            shape = MaterialTheme.shapes.small,
-                            colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
-                        )
-                    },
-                )
-                if (systemToolsSetting.autoRecordIdleEnabled) {
-                    item(
-                        headlineContent = { Text("闲置阈值（分钟）") },
-                        supportingContent = {
-                            Text("对话闲置超过该时长，自动总结刚结束的段落")
+                        Column {
+                            Text("每 N 轮对话记一条时间线。独立于模型上下文窗口，改 30/60/100 都可以")
                             OutlinedTextField(
-                                value = systemToolsSetting.autoRecordIdleMinutes.toString(),
+                                value = systemToolsSetting.autoRecordChapterN.toString(),
                                 onValueChange = { input ->
-                                    val m = input.toIntOrNull()
-                                    if (m != null && m > 0) {
-                                        updateSystemToolsSetting(systemToolsSetting.copy(autoRecordIdleMinutes = m))
+                                    val n = input.toIntOrNull()
+                                    if (n != null && n > 0) {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(autoRecordChapterN = n))
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -327,6 +312,29 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                 shape = MaterialTheme.shapes.small,
                                 colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
                             )
+                        }
+                    },
+                )
+                if (systemToolsSetting.autoRecordIdleEnabled) {
+                    item(
+                        headlineContent = { Text("闲置阈值（分钟）") },
+                        supportingContent = {
+                            Column {
+                                Text("对话闲置超过该时长，自动总结刚结束的段落")
+                                OutlinedTextField(
+                                    value = systemToolsSetting.autoRecordIdleMinutes.toString(),
+                                    onValueChange = { input ->
+                                        val m = input.toIntOrNull()
+                                        if (m != null && m > 0) {
+                                            updateSystemToolsSetting(systemToolsSetting.copy(autoRecordIdleMinutes = m))
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                    singleLine = true,
+                                    shape = MaterialTheme.shapes.small,
+                                    colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                                )
+                            }
                         },
                     )
                 }

@@ -315,16 +315,19 @@ private fun TreeHeartCard(
         item(
             headlineContent = { Text("自定义自我指针") },
             supportingContent = {
-                Text("留空 = 读工作区 self.md「注入文本」段的一行指针；本地也没有 = 用默认指针。可在工作区用 workspace 工具直接改 self.md（2.4.3 起只取一行，见证列表不再注入）")
-                OutlinedTextField(
-                    value = assistant.treeHeartPointer,
-                    onValueChange = { text -> onUpdate(assistant.copy(treeHeartPointer = text)) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    placeholder = { Text("例如：我是你的 AI 伙伴，一棵陪你慢慢长大的树。") },
-                    maxLines = 3,
-                    shape = MaterialTheme.shapes.small,
-                    colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
-                )
+                // M3 ListItem 槽位只排版单一根节点：Text 与输入框必须包进同一个 Column（2.4.4 修——此前输入框被静默丢弃，只见开关）
+                Column {
+                    Text("留空 = 读工作区 self.md「注入文本」段的一行指针；本地也没有 = 用默认指针。可在工作区用 workspace 工具直接改 self.md（2.4.3 起只取一行，见证列表不再注入）")
+                    OutlinedTextField(
+                        value = assistant.treeHeartPointer,
+                        onValueChange = { text -> onUpdate(assistant.copy(treeHeartPointer = text)) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        placeholder = { Text("例如：我是你的 AI 伙伴，一棵陪你慢慢长大的树。") },
+                        maxLines = 3,
+                        shape = MaterialTheme.shapes.small,
+                        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                    )
+                }
             }
         )
         item(
