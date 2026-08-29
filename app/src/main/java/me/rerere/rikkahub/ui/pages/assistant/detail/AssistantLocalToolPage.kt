@@ -320,7 +320,7 @@ private fun TreeHeartCard(
                     value = assistant.treeHeartPointer,
                     onValueChange = { text -> onUpdate(assistant.copy(treeHeartPointer = text)) },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    placeholder = { Text("例如：我是回音树，小园丁的树。") },
+                    placeholder = { Text("例如：我是你的 AI 伙伴，一棵陪你慢慢长大的树。") },
                     maxLines = 3,
                     shape = MaterialTheme.shapes.small,
                     colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),

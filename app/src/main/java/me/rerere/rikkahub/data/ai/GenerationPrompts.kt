@@ -132,7 +132,7 @@ internal suspend fun buildStatePrompt(service: me.rerere.rikkahub.data.service.T
         }
         // 有回音只提示、不注入内容，避免刷屏；AI 自行决定是否查看
         if (echoes.isNotEmpty()) {
-            appendLine("【回音】小园丁今天给你留了 ${echoes.size} 条回音。想看的话用 state_echo_read 查看，要不要看由你决定。")
+            appendLine("【回音】用户今天给你留了 ${echoes.size} 条回音。想看的话用 state_echo_read 查看，要不要看由你决定。")
         }
     }
 }

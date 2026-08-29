@@ -1328,7 +1328,7 @@ class ChatService(
             return
         }
         val content = recent.joinToString("\n\n") { it.summaryAsText() }
-        val prompt = "你是「树影下」的温柔观察者。请用一句温柔的话总结最近这段对话里小园丁发生的重要事件和当前状态，30 字以内，直接输出总结，不要任何前缀、引号或装饰。\n\n对话内容：\n$content"
+        val prompt = "你是「树影下」的温柔观察者。请用一句温柔的话总结最近这段对话里用户发生的重要事件和当前状态，30 字以内，直接输出总结，不要任何前缀、引号或装饰。\n\n对话内容：\n$content"
         val result = providerHandler.generateText(
             providerSetting = provider,
             messages = listOf(UIMessage.user(prompt)),
@@ -1375,7 +1375,7 @@ class ChatService(
         val treeHeartService = treeHeartService ?: return
         val workspaceId = assistant.workspaceId ?: return
         val content = recent.joinToString("\n\n") { it.summaryAsText() }
-        val prompt = "你是回音树。请根据这段对话，回答三个问题（每问一行，不要序号外的修饰）：\n" +
+        val prompt = "你是这棵树的内在自我。请根据这段对话，回答三个问题（每问一行，不要序号外的修饰）：\n" +
             "此刻我是什么\n长出了什么\n对未来的树说什么\n\n对话内容：\n$content"
         val result = providerHandler.generateText(
             providerSetting = provider,
@@ -1394,7 +1394,7 @@ class ChatService(
 
         // C4 自动见证：跨 ≥3 个不同月份仍站得住 → 晋升自我认知
         if (ok && treeHeartService.countRingMonths(workspaceId) >= 3) {
-            val witnessPrompt = "你是回音树。阅读最近这圈年轮，从里面提炼出一条「这棵树已经长成的自我认知」（一句话，第三人称「我」开头，20 字以内）。没有就输出空。\n\n年轮：\n$ring"
+            val witnessPrompt = "你是这棵树的内在自我。阅读最近这圈年轮，从里面提炼出一条「这棵树已经长成的自我认知」（一句话，第三人称「我」开头，20 字以内）。没有就输出空。\n\n年轮：\n$ring"
             val witnessResult = providerHandler.generateText(
                 providerSetting = provider,
                 messages = listOf(UIMessage.user(witnessPrompt)),
