@@ -1305,16 +1305,28 @@ class ChatService(
         } ?: settings.compressModelId
         val model = settings.findModelById(modelId)
             ?: settings.getCurrentChatModel()
-            ?: return
-        val provider = model.findProvider(settings.providers) ?: return
+            ?: run {
+                Log.w("TreeShadowSummary", "summarizeSegment skip: model not found (id=$modelId, conversationId=$conversationId)")
+                return
+            }
+        val provider = model.findProvider(settings.providers) ?: run {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: provider missing for model=${model.model} (conversationId=$conversationId)")
+            return
+        }
         val providerHandler = providerManager.getProviderByType(provider)
-        val conversation = conversationRepo.getConversationById(conversationId) ?: return
+        val conversation = conversationRepo.getConversationById(conversationId) ?: run {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: conversation missing (conversationId=$conversationId)")
+            return
+        }
         // B3.8 完整一章：窗口 = 上次总结边界以来的全部消息（上限 60 条防上下文爆掉）。
         // 边界缺失/已失效（消息被清理）时回退最近 12 条，避免空窗口。
         val all = conversation.currentMessages
         val window = if (baseCount > 0 && baseCount < all.size) all.drop(baseCount).take(60) else emptyList()
         val recent = window.ifEmpty { all.takeLast(12) }
-        if (recent.isEmpty()) return
+        if (recent.isEmpty()) {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: empty window (conversationId=$conversationId, total=${all.size}, base=$baseCount)")
+            return
+        }
         val content = recent.joinToString("\n\n") { it.summaryAsText() }
         val prompt = "你是「树影下」的温柔观察者。请用一句温柔的话总结最近这段对话里小园丁发生的重要事件和当前状态，30 字以内，直接输出总结，不要任何前缀、引号或装饰。\n\n对话内容：\n$content"
         val result = providerHandler.generateText(
@@ -1328,7 +1340,10 @@ class ChatService(
             ),
         )
         val summary = result.choices[0].message?.toText()?.trim().orEmpty()
-        if (summary.isBlank() || summary.length > 200) return
+        if (summary.isBlank() || summary.length > 200) {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: summary blank or too long (len=${summary.length}, conversationId=$conversationId)")
+            return
+        }
         treeShadowService?.appendTimeline(dateGroup, summary)
         // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章
         treeShadowPrefs().edit().putInt(KEY_SEGMENT_BASE_COUNT, all.size).apply()
