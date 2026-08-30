@@ -167,6 +167,9 @@ class RikkaHubApp : Application() {
         // Reschedule daily_cron alarm if plugins need it
         rescheduleDailyCronIfEnabled()
 
+        // 件② 问题B到点即结（2.4.5）：树影下闲置总结的 15 分钟周期兜底（KEEP，重复注册不叠加）
+        runCatching { me.rerere.rikkahub.service.TreeShadowIdleWorker.register(this) }
+
         // Diary summary is now generated entirely by Supabase Edge Function.
         // App no longer schedules local diary summary alarms.
 

@@ -249,7 +249,14 @@ class ChatService(
     private val lifecycleObserver = LifecycleEventObserver { _, event ->
         when (event) {
             Lifecycle.Event.ON_START -> _isForeground.value = true
-            Lifecycle.Event.ON_STOP -> _isForeground.value = false
+            Lifecycle.Event.ON_STOP -> {
+                _isForeground.value = false
+                // 件② 问题B到点即结（2.4.5）：退后台（最后一个 Activity ON_STOP）即查闲置段末，
+                // 用户不发第二条消息，到点也会总结。防重入与幂等在 checkIdleTriggerAndSummarize 内
+                runCatching { runIdleSummaryCheck() }.onFailure { e ->
+                    Log.w(TAG, "idle summary check on ON_STOP failed", e)
+                }
+            }
             else -> {}
         }
     }
@@ -1230,6 +1237,64 @@ class ChatService(
     // ---- 树影下：自动段落记录（决策 9） ----
 
     /**
+     * 件② 问题B到点即结（2.4.5）：闲置到点自动总结的后台检查入口，不依赖用户再发消息。
+     * 两个调用方：① App 退后台（ProcessLifecycleOwner ON_STOP，语义 = 最后一个 Activity ON_STOP）
+     * ② TreeShadowIdleWorker 15 分钟周期兜底。会话取 lastConversationId（ChatVM 已有写入先例）。
+     */
+    fun runIdleSummaryCheck() {
+        val convId = context.getSharedPreferences("rikkahub.preferences", Context.MODE_PRIVATE)
+            .getString("lastConversationId", null)
+            ?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: return
+        checkIdleTriggerAndSummarize(convId)
+    }
+
+    /**
+     * 闲置段末检查（触发①）：命中则发起总结并返回 true。不更新 lastAt/章节计数——
+     * 那是发送链 maybeSegmentSummary 的职责。含 TreeShadow 闸门与 segmentSummaryRunning 防重入。
+     * baseCount 以来无新消息则跳过（幂等：已总结过的段不会因反复检查而重复总结）。
+     */
+    private fun checkIdleTriggerAndSummarize(conversationId: Uuid): Boolean {
+        if (segmentSummaryRunning) return false
+        val settings = runCatching { settingsStore.settingsFlow.value }.getOrNull() ?: return false
+        val cfg = settings.systemToolsSetting
+        if (!cfg.autoRecordEnabled) return false
+        // 记录者=agent 时，系统不自动总结（交给 AI 自己 state_write）
+        if (cfg.autoRecordRecorder == "agent") return false
+        if (!cfg.autoRecordIdleEnabled) return false
+
+        val prefs = treeShadowPrefs()
+        val now = System.currentTimeMillis()
+        val lastAt = prefs.getLong(KEY_LAST_USER_MSG_AT, 0L)
+        if (lastAt <= 0) return false
+        val idleMs = cfg.autoRecordIdleMinutes.coerceAtLeast(1) * 60 * 1000L
+        if (now - lastAt < idleMs) return false
+
+        // 段末日期 = 上次消息所在日期（避免跨天记错）
+        val triggerDate = runCatching {
+            Instant.ofEpochMilli(lastAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+        }.getOrNull() ?: return false
+
+        val baseCount = prefs.getInt(KEY_SEGMENT_BASE_COUNT, 0)
+        segmentSummaryRunning = true
+        appScope.launch {
+            try {
+                // baseCount 以来有新消息才值得总结（后台检查可能在同一段落上反复触发，幂等跳过）
+                val total = conversationRepo.getConversationById(conversationId)?.currentMessages?.size ?: 0
+                if (total <= baseCount) {
+                    Log.i(TAG, "idle summary skip: no new messages since base (total=$total, base=$baseCount, conversationId=$conversationId)")
+                    return@launch
+                }
+                summarizeSegment(conversationId, triggerDate, baseCount)
+            } catch (e: Exception) {
+                Log.w(TAG, "TreeShadow idle summary failed, conversationId=$conversationId", e)
+            } finally {
+                segmentSummaryRunning = false
+            }
+        }
+        return true
+    }
+
+    /**
      * 自动记录（决策 9 / 2.4.0 自动记录开关组）：
      * 每次用户发消息时调用，检查两种触发：
      * ① 闲置段末：距上次用户消息闲置超阈值 → 总结刚结束的段落（段末时间戳归属，避免跨天记错）
@@ -1237,34 +1302,22 @@ class ChatService(
      * 记录者=agent 时系统不自动总结（AI 自行用 state_write 记录）。
      */
     private fun maybeSegmentSummary(conversationId: Uuid) {
-        if (segmentSummaryRunning) return
         val settings = runCatching { settingsStore.settingsFlow.value }.getOrNull() ?: return
         val cfg = settings.systemToolsSetting
         if (!cfg.autoRecordEnabled) return
-        // 记录者=agent 时，系统不自动总结（交给 AI 自己 state_write）
         if (cfg.autoRecordRecorder == "agent") return
+
+        // 触发① 闲置段末：抽出的共享检查（退后台/Worker 也走这里）。命中即总结，且
+        // segmentSummaryRunning 已置位——章节轮转即便同条消息也满足，也留给下一次发送
+        val idleHit = checkIdleTriggerAndSummarize(conversationId)
 
         val prefs = treeShadowPrefs()
         val now = System.currentTimeMillis()
-        val lastAt = prefs.getLong(KEY_LAST_USER_MSG_AT, 0L)
         prefs.edit().putLong(KEY_LAST_USER_MSG_AT, now).apply()
-
-        // 触发① 闲置段末
-        val idleMs = cfg.autoRecordIdleMinutes.coerceAtLeast(1) * 60 * 1000L
-        var idleHit = false
-        var triggerDate: String? = null
-        if (cfg.autoRecordIdleEnabled && lastAt > 0 && now - lastAt >= idleMs) {
-            idleHit = true
-            // 段末日期 = 上次消息所在日期（避免跨天记错）
-            triggerDate = try {
-                java.time.Instant.ofEpochMilli(lastAt)
-                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-            } catch (e: Exception) { null }
-        }
 
         // 触发② 章节轮转（默认关，独立开关；按日分组，跨天重置）
         var chapterHit = false
-        if (cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
+        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
             val today = TreeShadowService.today()
             val countDate = prefs.getString(KEY_MSG_COUNT_DATE, null)
             val count = if (countDate == today) prefs.getInt(KEY_MSG_COUNT, 0) else 0
@@ -1276,8 +1329,8 @@ class ChatService(
             }
         }
 
-        if (!idleHit && !chapterHit) return
-        val finalDate = triggerDate ?: TreeShadowService.today()
+        if (!chapterHit) return
+        val finalDate = TreeShadowService.today()
         // B3.8 读取章节边界：总结窗口取上次总结以来的新消息（完整一章）
         val baseCount = prefs.getInt(KEY_SEGMENT_BASE_COUNT, 0)
         segmentSummaryRunning = true
