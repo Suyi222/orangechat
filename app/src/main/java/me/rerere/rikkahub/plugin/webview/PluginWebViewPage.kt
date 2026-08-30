@@ -108,6 +108,11 @@ fun PluginWebViewPage(
     val pluginLoader = koinInject<PluginLoader>()
     val pluginRepository = koinInject<PluginRepository>()
     var webView by remember { mutableStateOf<WebView?>(null) }
+
+    // 件⑤ E1（2.4.5）：渲染进程崩溃重建计数。vivo 等机型每 ~2 分钟杀 WebView 渲染进程 →
+    // 白屏/状态丢失。onRenderProcessGone 里销毁旧 WebView 并 epoch++，key 变化触发
+    // AndroidView 整体重建并重新加载插件页；插件内部状态靠 env v2 同步 KV 自恢复（既有设计）
+    var webViewRebuildEpoch by remember { mutableStateOf(0) }
     var pendingImageCallback by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<String?>(null) }
     var pendingBinaryFileCallback by remember { mutableStateOf<String?>(null) }
@@ -488,6 +493,7 @@ fun PluginWebViewPage(
                     modifier = Modifier.align(Alignment.Center)
                 )
             } else {
+                androidx.compose.runtime.key(webViewRebuildEpoch) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
@@ -523,6 +529,10 @@ fun PluginWebViewPage(
                                 pluginLoader = pluginLoader,
                                 pluginManager = pluginManager,
                                 pluginRepository = pluginRepository,
+                                onRenderProcessGone = {
+                                    Log.w(TAG, "render process gone — rebuilding plugin webview")
+                                    webViewRebuildEpoch++
+                                },
                                 onPickImage = { callbackId ->
                                     pendingImageCallback = callbackId
                                     pickImageLauncher.launch(
@@ -852,6 +862,7 @@ fun PluginWebViewPage(
                         webView = wv
                     }
                 )
+                }
             }
         }
     }
@@ -891,9 +902,25 @@ private class PluginWebViewClient(
     private val onStartTimer: (webView: WebView, seconds: Int) -> Unit,
     private val onStopTimer: () -> Unit,
     private val onShowOverlay: (webView: WebView, html: String) -> Unit,
-    private val onHideOverlay: () -> Unit
+    private val onHideOverlay: () -> Unit,
+    private val onRenderProcessGone: () -> Unit = {},
 ) : WebViewClient() {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 件⑤ E1（2.4.5）：渲染进程被系统回收（vivo 每 ~2 分钟）→ 旧 WebView 已不可用。
+     * 返回 true 表示我们自己恢复：销毁旧实例 + 通知 Composable 重建（重新加载插件页），
+     * 不让系统把整个 App 杀掉。插件内部状态靠 env v2 同步 KV 自恢复（既有设计）。
+     */
+    override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+        Log.e(TAG, "onRenderProcessGone: WebView render process killed (didCrash=${detail.didCrash()})")
+        runCatching {
+            (view.parent as? android.view.ViewGroup)?.removeView(view)
+        }.onFailure { Log.w(TAG, "remove crashed webview failed", it) }
+        runCatching { view.destroy() }
+        runCatching { onRenderProcessGone() }
+        return true
+    }
 
     override fun shouldOverrideUrlLoading(
         view: WebView?,
