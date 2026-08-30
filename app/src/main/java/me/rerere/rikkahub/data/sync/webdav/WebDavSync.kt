@@ -10,6 +10,7 @@ import android.content.Context
 import android.util.Log
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.files.FileFolders
@@ -34,6 +35,33 @@ import java.util.zip.ZipOutputStream
 
 private const val TAG = "WebDavSync"
 
+/** 件④ G1（2.4.5）：备份 zip 里工作区条目前缀与 manifest 文件名 */
+private const val WORKSPACES_PREFIX = "workspaces/"
+private const val WORKSPACES_MANIFEST_ENTRY = "workspaces/manifest.json"
+
+/**
+ * 备份 zip 里的工作区清单条目（workspaces/manifest.json）。
+ * id/name/root 用备份时原值——恢复重建记录时沿用原 id，assistant.workspaceId 关联不断。
+ */
+@kotlinx.serialization.Serializable
+data class WorkspaceManifestEntry(
+    val id: String,
+    val name: String,
+    val root: String,
+)
+
+/**
+ * 件④ G1（2.4.5）恢复计划：把 zip 里 srcRoot 工作区的文件恢复到 targetRoot。
+ *  - createRecord != null → 恢复前按 manifest 重建工作区记录（全新安装/数据库未恢复的兜底）
+ *  - createRecord == null → 目标 root 已有记录（数据库已恢复或按 root 匹配现有），只写文件（覆盖合并）
+ */
+@kotlinx.serialization.Serializable
+data class WorkspaceRestoreTarget(
+    val srcRoot: String,
+    val targetRoot: String,
+    val createRecord: WorkspaceManifestEntry? = null,
+)
+
 class WebDavSync(
     private val settingsStore: SettingsStore,
     private val json: Json,
@@ -41,6 +69,15 @@ class WebDavSync(
     private val httpClient: HttpClient,
     private val pluginRepository: PluginRepository,
 ) {
+    // 件④ G1（2.4.5）：工作区备份/恢复依赖，Koin lazy 取（避免构造器连锁改动，同 LocalTools 先例）
+    private val workspaceRepository: me.rerere.rikkahub.data.repository.WorkspaceRepository? by lazy {
+        runCatching { org.koin.core.context.GlobalContext.get()
+            .get<me.rerere.rikkahub.data.repository.WorkspaceRepository>() }.getOrNull()
+    }
+    private val workspaceManager: me.rerere.workspace.WorkspaceManager? by lazy {
+        runCatching { org.koin.core.context.GlobalContext.get()
+            .get<me.rerere.workspace.WorkspaceManager>() }.getOrNull()
+    }
     private fun getClient(config: WebDavConfig): WebDavClient {
         return WebDavClient(config, httpClient)
     }
@@ -121,7 +158,11 @@ class WebDavSync(
         Log.i(TAG, "deleteBackupFile: Deleted ${item.displayName}")
     }
 
-    suspend fun restoreFromLocalFile(file: File, config: WebDavConfig) = withContext(Dispatchers.IO) {
+    suspend fun restoreFromLocalFile(
+        file: File,
+        config: WebDavConfig,
+        workspacePlan: List<WorkspaceRestoreTarget> = emptyList(),
+    ) = withContext(Dispatchers.IO) {
         Log.i(TAG, "restoreFromLocalFile: Starting restore from ${file.absolutePath}")
 
         if (!file.exists()) {
@@ -133,12 +174,93 @@ class WebDavSync(
         }
 
         try {
-            restoreFromBackupFile(file, config, includePlugins = true)
-            Log.i(TAG, "restoreFromLocalFile: Restore completed successfully")
+            // 件④ G1（2.4.5）：先重建缺失的工作区记录（createRecord != null 仅出现在
+            // 数据库未恢复/全新安装的兜底路径），再打快照，最后恢复
+            workspacePlan.filter { it.createRecord != null }.forEach { target ->
+                val rec = target.createRecord!!
+                runCatching {
+                    workspaceRepository?.restoreRecord(rec.id, rec.name, target.targetRoot)
+                }.onFailure { Log.e(TAG, "restoreRecord failed for root=${target.targetRoot}", it) }
+            }
+
+            // 风险 #3 对策：恢复前把将被覆盖的目标工作区 files/ 打快照 zip；恢复失败整体回滚
+            val mgr = workspaceManager
+            val snapshots = LinkedHashMap<String, File>()
+            if (mgr != null) {
+                workspacePlan.forEachIndexed { index, target ->
+                    val dir = mgr.filesDir(target.targetRoot)
+                    if (dir.exists() && dir.isDirectory) {
+                        runCatching { snapshots[target.targetRoot] = snapshotWorkspaceFiles(index, dir) }
+                            .onFailure { Log.w(TAG, "workspace snapshot failed for root=${target.targetRoot}", it) }
+                    }
+                }
+            }
+
+            try {
+                restoreFromBackupFile(file, config, includePlugins = true, workspacePlan = workspacePlan)
+                Log.i(TAG, "restoreFromLocalFile: Restore completed successfully")
+            } catch (e: Exception) {
+                snapshots.forEach { (root, snap) ->
+                    if (snap.exists()) rollbackWorkspaceFiles(root, snap)
+                }
+                throw e
+            } finally {
+                snapshots.values.forEach { if (it.exists()) it.delete() }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "restoreFromLocalFile: Failed to restore from local file", e)
             throw Exception("Restore failed: ${e.message}")
         }
+    }
+
+    /** 件④ G1（2.4.5）：检查本地备份文件里的工作区清单，供恢复面板展示。无 workspaces/ → null */
+    suspend fun inspectWorkspaceManifest(file: File): List<WorkspaceManifestEntry>? = withContext(Dispatchers.IO) {
+        ZipInputStream(FileInputStream(file)).use { zipIn ->
+            var entry: ZipEntry?
+            var manifest: List<WorkspaceManifestEntry>? = null
+            while (zipIn.nextEntry.also { entry = it } != null) {
+                if (entry?.name == WORKSPACES_MANIFEST_ENTRY) {
+                    val text = zipIn.readBytes().toString(Charsets.UTF_8)
+                    manifest = runCatching { json.decodeFromString<List<WorkspaceManifestEntry>>(text) }
+                        .onFailure { Log.w(TAG, "inspectWorkspaceManifest: parse failed", it) }
+                        .getOrNull()
+                    break
+                }
+                zipIn.closeEntry()
+            }
+            manifest
+        }
+    }
+
+    /** 件④ G1（2.4.5）：恢复前快照工作区 files/ 目录到 cacheDir（写失败回滚用） */
+    private fun snapshotWorkspaceFiles(index: Int, filesDir: File): File {
+        val snap = File(context.cacheDir, "ws_snapshot_${index}_${System.currentTimeMillis()}.zip")
+        ZipOutputStream(FileOutputStream(snap)).use { zipOut ->
+            addDirectoryToZip(zipOut, rootDir = filesDir, currentDir = filesDir, entryPrefix = "")
+        }
+        return snap
+    }
+
+    /** 件④ G1（2.4.5）：恢复失败时把快照内容写回目标工作区 files/（尽力而为，只记日志） */
+    private fun rollbackWorkspaceFiles(root: String, snapshot: File) {
+        val mgr = workspaceManager ?: return
+        val filesDir = mgr.filesDir(root)
+        runCatching {
+            if (filesDir.exists()) filesDir.deleteRecursively()
+            filesDir.mkdirs()
+            ZipInputStream(FileInputStream(snapshot)).use { zipIn ->
+                var entry = zipIn.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory) {
+                        val target = File(filesDir, entry.name)
+                        target.parentFile?.mkdirs()
+                        FileOutputStream(target).use { zipIn.copyTo(it) }
+                    }
+                    entry = zipIn.nextEntry
+                }
+            }
+            Log.w(TAG, "rollbackWorkspaceFiles: rolled back root=$root from snapshot")
+        }.onFailure { Log.e(TAG, "rollbackWorkspaceFiles failed for root=$root", it) }
     }
 
     suspend fun prepareBackupFile(
@@ -232,6 +354,60 @@ class WebDavSync(
                         Log.w(TAG, "prepareBackupFile: Plugins folder does not exist or is not a directory")
                     }
                 }
+
+                // 件④ G1（2.4.5）：插件数据入备份——shared_prefs 里所有 plugin_data_* 全 String KV。
+                // 树邮局信件/算卦记录等插件态全在这里（无条件入 zip，不受 includePlugins 限制）
+                try {
+                    val pluginData = LinkedHashMap<String, Map<String, String>>()
+                    val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                    prefsDir.listFiles { f ->
+                        f.name.startsWith("plugin_data_") && f.name.endsWith(".xml")
+                    }?.forEach { f ->
+                        val prefName = f.name.removeSuffix(".xml")
+                        val kv = context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                            .all.mapValues { it.value?.toString().orEmpty() }
+                        pluginData[prefName] = kv
+                    }
+                    addVirtualFileToZip(
+                        zipOut = zipOut,
+                        name = "plugin_data.json",
+                        content = json.encodeToString<Map<String, Map<String, String>>>(pluginData),
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "prepareBackupFile: Failed to back up plugin data", e)
+                }
+
+                // 件④ G1（2.4.5）：工作区文件区入备份——每个工作区 files/ 子树打 workspaces/<root>/...
+                //（天然排除同级 linux/ rootfs 与 temp/；工作区记录在数据库里，数据库恢复后自动对齐）
+                try {
+                    val repo = workspaceRepository
+                    val mgr = workspaceManager
+                    if (repo != null && mgr != null) {
+                        val entities = repo.listFlow().first()
+                        val manifest = entities.map {
+                            WorkspaceManifestEntry(id = it.id, name = it.name, root = it.root)
+                        }
+                        addVirtualFileToZip(
+                            zipOut = zipOut,
+                            name = WORKSPACES_MANIFEST_ENTRY,
+                            content = json.encodeToString(manifest),
+                        )
+                        entities.forEach { ws ->
+                            val filesDir = mgr.filesDir(ws.root)
+                            if (filesDir.exists() && filesDir.isDirectory) {
+                                addDirectoryToZip(
+                                    zipOut = zipOut,
+                                    rootDir = filesDir,
+                                    currentDir = filesDir,
+                                    entryPrefix = "$WORKSPACES_PREFIX${ws.root}/",
+                                )
+                                Log.i(TAG, "prepareBackupFile: Backed up workspace files root=${ws.root}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "prepareBackupFile: Failed to back up workspaces", e)
+                }
             }
         }
 
@@ -245,7 +421,8 @@ class WebDavSync(
     private suspend fun restoreFromBackupFile(
         backupFile: File,
         config: WebDavConfig,
-        includePlugins: Boolean = true
+        includePlugins: Boolean = true,
+        workspacePlan: List<WorkspaceRestoreTarget> = emptyList(),
     ) = withContext(Dispatchers.IO) {
         Log.i(TAG, "restoreFromBackupFile: Starting restore from ${backupFile.absolutePath}")
 
@@ -353,6 +530,26 @@ class WebDavSync(
                                 zipEntry.name.startsWith("${PluginScanner.PLUGINS_DIR}/")
                             ) {
                                 restorePluginEntry(zipIn, zipEntry.name)
+                            } else if (zipEntry.name == "plugin_data.json") {
+                                // 件④ G1（2.4.5）：插件数据原样写回 shared_prefs（无条件，云恢复也恢复）
+                                try {
+                                    val text = zipIn.readBytes().toString(Charsets.UTF_8)
+                                    val data = json.decodeFromString<Map<String, Map<String, String>>>(text)
+                                    data.forEach { (prefName, kv) ->
+                                        val prefs = context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                                        prefs.edit().clear().apply()
+                                        kv.forEach { (k, v) -> prefs.edit().putString(k, v).apply() }
+                                    }
+                                    Log.i(TAG, "restoreFromBackupFile: Restored plugin data (${data.size} prefs)")
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "restoreFromBackupFile: Failed to restore plugin data", e)
+                                }
+                            } else if (workspacePlan.isNotEmpty() &&
+                                config.items.contains(WebDavConfig.BackupItem.FILES) &&
+                                zipEntry.name.startsWith(WORKSPACES_PREFIX)
+                            ) {
+                                // 件④ G1（2.4.5）：工作区文件按恢复计划写入（本地导入路径带 plan）
+                                restoreWorkspaceEntry(zipIn, zipEntry.name, workspacePlan)
                             } else {
                                 Log.i(TAG, "restoreFromBackupFile: Skipping entry ${zipEntry.name}")
                             }
@@ -395,6 +592,37 @@ class WebDavSync(
                 val relativePath = file.relativeTo(rootDir).invariantSeparatorsPath
                 addFileToZip(zipOut, file, "$entryPrefix$relativePath")
             }
+        }
+    }
+
+    /** 件④ G1（2.4.5）：把 zip 里 workspaces/<srcRoot>/... 的一条文件按恢复计划写进目标工作区 files/ */
+    private fun restoreWorkspaceEntry(
+        zipIn: ZipInputStream,
+        entryName: String,
+        plan: List<WorkspaceRestoreTarget>,
+    ) {
+        val relative = entryName.removePrefix(WORKSPACES_PREFIX)
+        if (relative.isBlank() || relative == "manifest.json") return  // manifest 只供恢复面板，不落盘
+        val srcRoot = relative.substringBefore('/', missingDelimiterValue = "")
+        val filePath = relative.substringAfter('/', missingDelimiterValue = "")
+        if (srcRoot.isBlank() || filePath.isBlank()) return
+        val target = plan.firstOrNull { it.srcRoot == srcRoot } ?: run {
+            Log.i(TAG, "restoreWorkspaceEntry: Skipping workspace $srcRoot (not selected)")
+            return
+        }
+        val mgr = workspaceManager ?: return
+        val filesRoot = mgr.filesDir(target.targetRoot).apply { mkdirs() }
+        val targetFile = File(filesRoot, filePath)
+        // 路径穿越防护：解析后的真实路径必须仍在目标 files/ 目录内
+        if (!targetFile.canonicalFile.path.startsWith(filesRoot.canonicalFile.path + File.separator)) {
+            Log.w(TAG, "restoreWorkspaceEntry: skip suspicious entry $entryName")
+            return
+        }
+        targetFile.parentFile?.mkdirs()
+        try {
+            FileOutputStream(targetFile).use { zipIn.copyTo(it) }
+        } catch (e: Exception) {
+            throw Exception("Failed to restore workspace file $entryName: ${e.message}")
         }
     }
 

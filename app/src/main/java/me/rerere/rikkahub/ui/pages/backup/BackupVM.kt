@@ -10,6 +10,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -20,6 +21,8 @@ import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
+import me.rerere.rikkahub.data.sync.webdav.WorkspaceManifestEntry
+import me.rerere.rikkahub.data.sync.webdav.WorkspaceRestoreTarget
 import me.rerere.rikkahub.data.sync.S3BackupItem
 import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.utils.UiState
@@ -27,12 +30,21 @@ import java.io.File
 
 private const val TAG = "BackupVM"
 
+/** 件④ G1（2.4.5）：恢复后自动下载 rootfs 的默认镜像（与 RootfsInstallUrlDialog 默认值一致） */
+private const val DEFAULT_ROOTFS_URL =
+    "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz"
+
 class BackupVM(
     private val settingsStore: SettingsStore,
     private val webDavSync: WebDavSync,
     private val s3Sync: S3Sync,
     private val conversationRepository: ConversationRepository,
 ) : ViewModel() {
+    // 件④ G1（2.4.5）：恢复面板用的工作区数据源（Koin lazy 取，不改构造器）
+    private val workspaceRepository: me.rerere.rikkahub.data.repository.WorkspaceRepository? by lazy {
+        runCatching { org.koin.core.context.GlobalContext.get()
+            .get<me.rerere.rikkahub.data.repository.WorkspaceRepository>() }.getOrNull()
+    }
     val settings = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -93,8 +105,52 @@ class BackupVM(
         return file
     }
 
-    suspend fun restoreFromLocalFile(file: File) {
-        webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig)
+    suspend fun restoreFromLocalFile(file: File, workspacePlan: List<WorkspaceRestoreTarget> = emptyList()) {
+        webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig, workspacePlan)
+    }
+
+    /** 件④ G1（2.4.5）：读本地备份 zip 里的工作区清单（无 workspaces/ → null） */
+    suspend fun inspectLocalBackup(file: File): List<WorkspaceManifestEntry>? =
+        webDavSync.inspectWorkspaceManifest(file)
+
+    /** 件④ G1（2.4.5）：设备上现有工作区记录（数据库恢复过就有） */
+    suspend fun existingWorkspaces(): List<String> =
+        workspaceRepository?.listFlow()?.first()?.map { it.root }.orEmpty()
+
+    /**
+     * 件④ G1（2.4.5）：构建恢复计划。
+     * 勾选的备份工作区按 root 匹配现有 → 覆盖合并（只写文件）；无匹配 → 新建（沿用备份 id/name，
+     * assistant.workspaceId 关联随 settings.json 自动对齐）。未勾选的不进 plan（zip 循环里跳过）。
+     */
+    fun buildWorkspacePlan(
+        manifest: List<WorkspaceManifestEntry>,
+        selectedRoots: Set<String>,
+        existingRoots: Collection<String>,
+    ): List<WorkspaceRestoreTarget> =
+        manifest.filter { it.root in selectedRoots }.map { entry ->
+            WorkspaceRestoreTarget(
+                srcRoot = entry.root,
+                targetRoot = entry.root,
+                createRecord = if (entry.root in existingRoots) null else entry,
+            )
+        }
+
+    /**
+     * 件④ G1（2.4.5）：恢复完成后可选自动下载 rootfs（面板勾选）。
+     * 逐个目标工作区后台安装，用 RootfsInstallUrlDialog 同款默认镜像；失败只记日志不阻断。
+     */
+    fun autoInstallRootfs(targets: List<WorkspaceRestoreTarget>) {
+        if (targets.isEmpty()) return
+        viewModelScope.launch {
+            targets.forEach { target ->
+                runCatching {
+                    workspaceRepository?.installRootfs(
+                        target.targetRoot,
+                        DEFAULT_ROOTFS_URL,
+                    ) { }
+                }.onFailure { Log.w(TAG, "autoInstallRootfs failed for root=${target.targetRoot}", it) }
+            }
+        }
     }
 
     suspend fun restoreFromChatBox(file: File): ChatboxRestoreResult {

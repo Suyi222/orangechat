@@ -78,6 +78,35 @@ class WorkspaceRepository(
         return workspace
     }
 
+    /**
+     * 件④ G1（2.4.5）备份恢复：按备份 manifest 重建工作区记录。
+     * id/root 用备份里的原值——settings.json 恢复后 assistant.workspaceId 指向备份时的
+     * 工作区 id，沿用原 id 关联才不会断（全新安装/数据库未恢复的兜底重建路径）。
+     * root 唯一索引：调用方（恢复流程）已保证目标 root 不与现有工作区冲突（按 root 匹配的
+     * 覆盖合并走文件直写，不重建记录）。
+     */
+    suspend fun restoreRecord(id: String, name: String, root: String): WorkspaceEntity {
+        require(dao.getAll().none { it.root == root && it.id != id }) {
+            "Workspace root already exists: $root"
+        }
+        val existing = dao.getById(id)
+        val now = System.currentTimeMillis()
+        val entity = (existing ?: WorkspaceEntity(
+            id = id,
+            name = name,
+            root = root,
+            createdAt = now,
+            updatedAt = now,
+        )).copy(
+            name = name.ifBlank { existing?.name ?: "Workspace" },
+            root = root,
+            updatedAt = now,
+        )
+        manager.ensureWorkspace(root)
+        dao.upsert(entity)
+        return entity
+    }
+
     suspend fun rename(id: String, name: String): Boolean {
         val workspace = dao.getById(id) ?: return false
         val finalName = name.trim().ifBlank { workspace.name }
