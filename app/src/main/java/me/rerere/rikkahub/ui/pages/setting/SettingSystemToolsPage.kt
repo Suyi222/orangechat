@@ -105,6 +105,15 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
+    // 件① 问题A迁移（2.4.5）：一次性提示。本地 state 控制「本次进入页面持续显示」，
+    // LaunchedEffect 立即清除持久标志——离开页面后再进就不再出现（展示后清除）
+    var showTreeShadowMigratedNotice by remember { mutableStateOf(settings.treeShadowMigratedNotify) }
+    LaunchedEffect(Unit) {
+        if (settings.treeShadowMigratedNotify) {
+            vm.updateSettings(settings.copy(treeShadowMigratedNotify = false))
+        }
+    }
+
     val locationPermissions = buildSet {
         add(PermissionAccessFineLocation)
         add(PermissionAccessCoarseLocation)
@@ -235,6 +244,14 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
             // 🌳 树影下 · 自动记录（2.4.0 自动记录开关组）
             item {
             CardGroup(title = { Text("🌳 树影下 · 自动记录") }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                // 件① 问题A迁移（2.4.5）一次性提示：进页展示、展示后即清除持久标志，下次进入不再出现
+                if (showTreeShadowMigratedNotice) {
+                    item(
+                        leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
+                        headlineContent = { Text("已为你的助手自动开启树影下") },
+                        supportingContent = { Text("升级修复：老版本的助手缺少「🌳树影下」本地工具开关，导致不注入状态、没有记录工具、也不自动总结。已一次性为所有助手补开，点右上角开关或到 助手 → 本地工具 可再调整。") },
+                    )
+                }
                 item(
                     leadingContent = { Icon(imageVector = HugeIcons.Sun02, contentDescription = null) },
                     headlineContent = { Text("自动记录对话") },

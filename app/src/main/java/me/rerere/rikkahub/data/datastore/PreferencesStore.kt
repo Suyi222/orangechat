@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import me.rerere.ai.core.MessageRole
@@ -39,6 +40,7 @@ import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TRANSLATION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.LEARNING_MODE_PROMPT
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.ExternalMemory
@@ -189,9 +191,61 @@ class SettingsStore(
 
         // 自动批准所有工具调用（懒人模式）
         val AUTO_APPROVE_ALL_TOOLS = booleanPreferencesKey("auto_approve_all_tools")
+
+        // 件① 问题A迁移（2.4.5）：老助手 localTools 缺 TreeShadow 的一次性补齐标记。
+        // 标记写入后永不再动——用户此后手动关闭的开关会被尊重，不会被再次强制打开。
+        val TREESHADOW_MIGRATED = booleanPreferencesKey("treeshadow_migrated")
+        // 迁移实际改动过助手时置 true，系统工具页展示一次「已为你的助手自动开启树影下」后清除
+        val TREESHADOW_MIGRATED_NOTIFY = booleanPreferencesKey("treeshadow_migrated_notify")
     }
 
     private val dataStore = context.settingsStore
+
+    init {
+        // 件① 问题A迁移（2.4.5）：一次性把老助手 localTools 补上 TreeShadow 并落盘标记。
+        // 只在标记不存在时执行——之后用户手动关闭的树影下永不再被强制打开（尊重手动关闭）。
+        // 读时兜底在 decodeAssistantsMigrateTreeShadow；这里负责把迁移结果与标记写进磁盘，
+        // 否则标记永远缺失，用户手动关闭后重启又会被读时兜底重新打开。
+        scope.launch {
+            runCatching {
+                dataStore.edit { preferences ->
+                    if (preferences[TREESHADOW_MIGRATED] == true) return@edit
+                    val stored = preferences[ASSISTANTS]?.let {
+                        runCatching { JsonInstant.decodeFromString<List<Assistant>>(it) }.getOrNull()
+                    } ?: DEFAULT_ASSISTANTS
+                    var changed = false
+                    val migrated = stored.map { assistant ->
+                        if (LocalToolOption.TreeShadow in assistant.localTools) assistant
+                        else {
+                            changed = true
+                            assistant.copy(localTools = assistant.localTools + LocalToolOption.TreeShadow)
+                        }
+                    }
+                    if (changed) {
+                        preferences[ASSISTANTS] = JsonInstant.encodeToString(migrated)
+                        preferences[TREESHADOW_MIGRATED_NOTIFY] = true
+                    }
+                    preferences[TREESHADOW_MIGRATED] = true
+                }
+                Log.i(TAG, "treeshadow migration done")
+            }.onFailure { Log.e(TAG, "treeshadow migration failed", it) }
+        }
+    }
+
+    /**
+     * 件① 问题A迁移：读 settings 时对助手列表做 TreeShadow 兜底补齐。
+     * 标记已写入 → 原样返回（不碰用户手动关闭的开关）；标记缺失 → 读时补齐（迁移 edit 落盘前的显示兜底）。
+     */
+    private fun decodeAssistantsMigrateTreeShadow(preferences: androidx.datastore.preferences.core.Preferences): List<Assistant> {
+        val assistants = preferences[ASSISTANTS]?.let {
+            runCatching { JsonInstant.decodeFromString<List<Assistant>>(it) }.getOrDefault(emptyList())
+        } ?: DEFAULT_ASSISTANTS
+        if (preferences[TREESHADOW_MIGRATED] == true) return assistants
+        return assistants.map { assistant ->
+            if (LocalToolOption.TreeShadow in assistant.localTools) assistant
+            else assistant.copy(localTools = assistant.localTools + LocalToolOption.TreeShadow)
+        }
+    }
 
     // 用于检测 assistants 列表是否真正变化，避免无关设置写入触发 Pebble 模板缓存清空
     @Volatile
@@ -244,7 +298,7 @@ class SettingsStore(
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
-                assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
+                assistants = decodeAssistantsMigrateTreeShadow(preferences),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
                 customThemes = preferences[CUSTOM_THEMES]?.let {
@@ -318,6 +372,7 @@ class SettingsStore(
                 forceConfirmToolCalls = preferences[FORCE_CONFIRM_TOOL_CALLS] != false,
                 workflowHeadlessBlockSensitive = preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] != false,
                 autoApproveAllTools = preferences[AUTO_APPROVE_ALL_TOOLS] == true,
+                treeShadowMigratedNotify = preferences[TREESHADOW_MIGRATED_NOTIFY] == true,
             )
         }
         .map {
@@ -499,6 +554,7 @@ class SettingsStore(
             preferences[FORCE_CONFIRM_TOOL_CALLS] = settings.forceConfirmToolCalls
             preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
             preferences[AUTO_APPROVE_ALL_TOOLS] = settings.autoApproveAllTools
+            preferences[TREESHADOW_MIGRATED_NOTIFY] = settings.treeShadowMigratedNotify
         }
     }
 
@@ -639,6 +695,8 @@ data class Settings(
     val forceConfirmToolCalls: Boolean = true,
     val workflowHeadlessBlockSensitive: Boolean = true,
     val autoApproveAllTools: Boolean = false,
+    // 件① 问题A迁移：一次性提示「已为你的助手自动开启树影下」，展示后清除
+    val treeShadowMigratedNotify: Boolean = false,
 ) {
     companion object {
         // 构造一个用于初始化的settings, 但它不能用于保存，防止使用初始值存储
