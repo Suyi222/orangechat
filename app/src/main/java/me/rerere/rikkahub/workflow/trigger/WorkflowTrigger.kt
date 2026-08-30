@@ -16,9 +16,13 @@ import me.rerere.rikkahub.workflow.model.WorkflowDefinition
  * [matchSpec] is the trigger spec that fired (used to discriminate between, e.g.,
  * `wifi_connected` and `wifi_disconnected` on the same receiver). The engine still
  * checks workflow-level conditions before executing actions.
+ *
+ * 返回值（2.4.5 件③）：true = 工作流真实执行过（SUCCESS 或 FAILED，SKIPPED_* 不算），
+ * 供 trigger 层的每日计数（markFired）与引擎层 runs_today_count 语义对齐；调用方不关心的
+ * （如各 receiver family 的 fire 点）忽略返回值即可。
  */
 fun interface TriggerFireCallback {
-    suspend fun onFire(workflowId: String, matchSpec: TriggerSpec)
+    suspend fun onFire(workflowId: String, matchSpec: TriggerSpec): Boolean
 }
 
 /**

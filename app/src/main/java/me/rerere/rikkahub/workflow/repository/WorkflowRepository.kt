@@ -127,6 +127,56 @@ class WorkflowRepository(
     }
 
     /**
+     * 件③ RUNNING 先行落盘（2.4.5）：fire 入口在所有 gate 判定前预插一行 RUNNING，
+     * 返回 rowId 供 [finalizeRun] 原地收尾。崩溃后历史里可见 RUNNING 残迹（晨信双信根治之三）。
+     * 不更新 workflow 投影——RUNNING 还不是一次真实 fire。
+     */
+    suspend fun openRunningRun(workflowId: String, firedAtMs: Long): Long =
+        workflowRunDao.insert(WorkflowRunEntity(
+            workflowId = workflowId,
+            firedAtMs = firedAtMs,
+            status = WorkflowRunStatus.RUNNING.name,
+            durationMs = 0,
+            errorMessage = null,
+        ))
+
+    /**
+     * 件③（2.4.5）：把 [openRunningRun] 预插的行 update 为终态，并沿用原 recordFire 的
+     * 投影更新（lastRun* + 每日计数，只有 SUCCESS/FAILED 计入）与历史 trim。
+     */
+    suspend fun finalizeRun(
+        rowId: Long,
+        workflowId: String,
+        firedAtMs: Long,
+        status: WorkflowRunStatus,
+        durationMs: Long,
+        errorMessage: String?,
+        zoneId: ZoneId = ZoneId.systemDefault(),
+    ) {
+        val truncatedErr = errorMessage?.take(WorkflowConstants.MAX_ERROR_LENGTH)
+        workflowRunDao.finalizeRun(rowId, status.name, durationMs, truncatedErr)
+        // Daily-cap counter: only counted if the fire was real (SUCCESS or FAILED). Skip
+        // statuses don't count, per spec.
+        val countsTowardCap = status == WorkflowRunStatus.SUCCESS || status == WorkflowRunStatus.FAILED
+        val today = LocalDate.now(zoneId).toString()  // "yyyy-MM-dd"
+        val current = workflowDao.getById(workflowId)
+        val newCount = when {
+            current == null -> if (countsTowardCap) 1 else 0
+            current.runsTodayDate != today -> if (countsTowardCap) 1 else 0  // rolled over
+            else -> current.runsTodayCount + (if (countsTowardCap) 1 else 0)
+        }
+        workflowDao.recordFire(
+            id = workflowId,
+            firedAtMs = firedAtMs,
+            status = status.name,
+            errorMessage = truncatedErr,
+            runsTodayCount = newCount,
+            runsTodayDate = today,
+        )
+        workflowRunDao.trim(workflowId, WorkflowConstants.MAX_RUNS_HISTORY)
+    }
+
+    /**
      * Record a fire — write a [WorkflowRunEntity] history row, update the projected
      * last-run columns + daily counter on the workflow, and trim history to
      * [WorkflowConstants.MAX_RUNS_HISTORY] rows.

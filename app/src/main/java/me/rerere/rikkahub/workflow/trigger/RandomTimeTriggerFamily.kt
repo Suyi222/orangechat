@@ -36,11 +36,14 @@ import kotlin.random.Random
  * instead of a fixed period.
  *
  * Daily cap is tracked in a small SharedPreferences (date + count per workflow id);
- * the date rolls over automatically on the first fire of a new day.
+ * the date rolls over automatically on the first fire of a new day. 2.4.5 件③：计数语义
+ * 与引擎层对齐——checkCap 触发时只读校验，markFired 仅在引擎真实执行（SUCCESS/FAILED）后 +1，
+ * SKIPPED_* 不吃配额；进程重启后今日已真实 fire 过的工作流直接排明日窗口（重启判重）。
  */
 internal class RandomTimeTriggerFamily(
     private val context: Context,
     private val scope: CoroutineScope,
+    private val workflowRepository: me.rerere.rikkahub.workflow.repository.WorkflowRepository? = null,
 ) : WorkflowTriggerFamily {
 
     override val name = "random_time_between"
@@ -70,7 +73,15 @@ internal class RandomTimeTriggerFamily(
                 || prev.updatedAtMs != wf.updatedAtMs
                 || !prev.enabled
             ) {
-                scheduleWork(wf)
+                // 2.4.5 件③重启判重：进程重启后 lastSnapshot 为空，所有 wf 都走 prev==null 分支。
+                // 今日已真实 fire 过（SUCCESS/FAILED，与冷却同语义）的工作流直接排明日窗口，
+                // 跳过今日剩余——否则晨信类工作流重启后会再触发一次（晨信双信根治之二）。
+                if (prev == null && wasFiredToday(id)) {
+                    Log.i(TAG, "random_time: $id already fired today, skipping to tomorrow's window")
+                    scheduleWorkAfterCurrentWindow(wf)
+                } else {
+                    scheduleWork(wf)
+                }
             }
         }
         lastSnapshot = matching
@@ -124,7 +135,9 @@ internal class RandomTimeTriggerFamily(
 
         // 每日上限：达上限则跳过本次触发，并把下一个随机点推到当前窗口之后
         //（避免在窗口剩余时间内再空跑一次 worker 才发现已达上限）。
-        if (!claimFire(workflowId, spec.maxTriggersPerDay)) {
+        // 2.4.5 件③：claimFire 拆成 checkCap（触发时只读校验）+ markFired（fire 真实完成后 +1），
+        // 与引擎层 runs_today_count（只数 SUCCESS/FAILED）语义一致——SKIPPED_* 不再吃掉随机触发器配额。
+        if (!checkCap(workflowId, spec.maxTriggersPerDay)) {
             Log.d(TAG, "random_time: $workflowId daily cap (${spec.maxTriggersPerDay}) reached, rescheduling after current window")
             scheduleWorkAfterCurrentWindow(wf)
             return
@@ -132,6 +145,7 @@ internal class RandomTimeTriggerFamily(
 
         scope.launch(Dispatchers.IO) {
             runCatching { cb.onFire(wf.id, wf.trigger) }
+                .onSuccess { executed -> if (executed) markFired(workflowId) }
                 .onFailure { Log.w(TAG, "random_time: fire callback failed for $workflowId", it) }
         }
         // 重新调度下一个随机点
@@ -147,24 +161,37 @@ internal class RandomTimeTriggerFamily(
         scheduleWork(wf, shiftMs)
     }
 
-    /** true = 允许本次触发并已计数；false = 已达每日上限。按日期自动重置。 */
-    private fun claimFire(workflowId: String, maxPerDay: Int): Boolean {
+    /**
+     * 2.4.5 件③：触发时只读校验（不计数）。true = 配额未满。
+     * 计数推迟到 [markFired]——只有引擎层真实执行（SUCCESS/FAILED）才 +1。
+     */
+    private fun checkCap(workflowId: String, maxPerDay: Int): Boolean {
+        val today = LocalDate.now().toString()
+        val storedDate = counterPrefs.getString("${KEY_PREFIX}_${workflowId}_date", "")
+        val count = if (storedDate == today) counterPrefs.getInt("${KEY_PREFIX}_${workflowId}_count", 0) else 0
+        return count < maxPerDay
+    }
+
+    /** 2.4.5 件③：fire 真实完成后 +1（commit 同步落盘，同 2.4.2 防崩溃窗口丢计数）。 */
+    private fun markFired(workflowId: String) {
         val today = LocalDate.now().toString()
         val dateKey = "${KEY_PREFIX}_${workflowId}_date"
         val countKey = "${KEY_PREFIX}_${workflowId}_count"
         synchronized(counterLock) {
             val storedDate = counterPrefs.getString(dateKey, "")
-            val count = if (storedDate == today) {
-                counterPrefs.getInt(countKey, 0)
-            } else {
-                // 2.4.2：commit() 同步落盘——apply() 在崩溃窗口内丢计数，导致每日上限失效（晨信双信案 §十）
-                counterPrefs.edit().putString(dateKey, today).putInt(countKey, 0).commit()
-                0
-            }
-            if (count >= maxPerDay) return false
-            counterPrefs.edit().putInt(countKey, count + 1).commit()
-            return true
+            val count = if (storedDate == today) counterPrefs.getInt(countKey, 0) else 0
+            counterPrefs.edit().putString(dateKey, today).putInt(countKey, count + 1).commit()
         }
+    }
+
+    /** 2.4.5 件③重启判重：该工作流今日是否已真实 fire 过（SUCCESS/FAILED，SKIPPED_* 不算）。 */
+    private suspend fun wasFiredToday(workflowId: String): Boolean {
+        val repo = workflowRepository ?: return false
+        val lastMs = runCatching { repo.lastActualFireAtMs(workflowId) }.getOrNull() ?: return false
+        return runCatching {
+            java.time.Instant.ofEpochMilli(lastMs)
+                .atZone(ZoneId.systemDefault()).toLocalDate().toString() == LocalDate.now().toString()
+        }.getOrDefault(false)
     }
 
     companion object {

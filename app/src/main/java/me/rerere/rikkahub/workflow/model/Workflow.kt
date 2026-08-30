@@ -30,6 +30,8 @@ data class WorkflowAction(
  *  - SKIPPED_COOLDOWN — fired inside cooldown window
  *  - SKIPPED_DAILY_CAP — daily cap reached
  *  - SKIPPED_DISABLED — workflow toggle was off when trigger arrived (race-cleanup)
+ *  - RUNNING — fire 入口先行落盘的进行中行（2.4.5 件③）；进程崩溃后残留可见，
+ *    正常结束时被 persistAndReturn 原地 update 为终态
  */
 enum class WorkflowRunStatus {
     SUCCESS,
@@ -38,6 +40,7 @@ enum class WorkflowRunStatus {
     SKIPPED_COOLDOWN,
     SKIPPED_DAILY_CAP,
     SKIPPED_DISABLED,
+    RUNNING,
 }
 
 /**

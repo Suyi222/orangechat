@@ -56,4 +56,12 @@ interface WorkflowRunDao {
      */
     @Query("SELECT firedAtMs FROM workflow_runs WHERE workflowId = :workflowId AND status IN ('SUCCESS', 'FAILED') ORDER BY firedAtMs DESC LIMIT 1")
     suspend fun lastActualFireAtMs(workflowId: String): Long?
+
+    /**
+     * 件③ RUNNING 先行落盘（2.4.5）：把 fire 入口预插的 RUNNING 行原地 update 为终态。
+     * 崩溃时该行保持 RUNNING——历史里可见残迹；既有统计查询均按 status IN ('SUCCESS','FAILED')
+     * 过滤，RUNNING 残迹不会污染冷却/计数语义。
+     */
+    @Query("UPDATE workflow_runs SET status = :status, durationMs = :durationMs, errorMessage = :errorMessage WHERE rowId = :rowId")
+    suspend fun finalizeRun(rowId: Long, status: String, durationMs: Long, errorMessage: String?)
 }

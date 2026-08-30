@@ -61,7 +61,7 @@ class TriggerRegistry(
     private val screen = ScreenTriggerFamily(context, triggerScope)
     private val battery = BatteryTriggerFamily(context, triggerScope)
     private val timeCron = TimeCronTriggerFamily(context, triggerScope)
-    private val randomTime = RandomTimeTriggerFamily(context, triggerScope)
+    private val randomTime = RandomTimeTriggerFamily(context, triggerScope, workflowRepository)
     private val geofence = GeofenceTriggerFamily(context, triggerScope)
     private val appForeground = AppForegroundTriggerFamily(triggerScope)
     private val notification = NotificationTriggerFamily(triggerScope)

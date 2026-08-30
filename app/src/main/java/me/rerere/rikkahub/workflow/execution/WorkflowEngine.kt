@@ -111,8 +111,11 @@ class WorkflowEngine(
      * Trigger callback target. The registry hands every fire here. [matchSpec] is the
      * variant that fired — used for diagnostics; the workflow's own [WorkflowDefinition.trigger]
      * is the source of truth for its semantics.
+     * 返回 true = 真实执行（SUCCESS/FAILED）；SKIPPED_* 返回 false——2.4.5 件③计数语义对齐。
      */
-    val triggerCallback = TriggerFireCallback { workflowId, _ -> fire(workflowId) }
+    val triggerCallback = TriggerFireCallback { workflowId, _ ->
+        fire(workflowId).status.let { it == WorkflowRunStatus.SUCCESS || it == WorkflowRunStatus.FAILED }
+    }
 
     /**
      * Fire a workflow. Resolves cooldown / daily cap / conditions, then runs the action
@@ -145,8 +148,15 @@ class WorkflowEngine(
             },
         )
 
+        // 件③ RUNNING 先行落盘（2.4.5）：所有 gate 判定前预插 RUNNING 行。进程若在此后
+        // 任何时刻崩溃，历史里可见 RUNNING 残迹（晨信双信根治之三）；正常路径由
+        // persistAndReturn 把该行原地 update 为终态。insert 失败则回退旧的 insert-once 路径。
+        val runRowId = runCatching { repository.openRunningRun(workflowId, firedAtMs) }
+            .onFailure { Log.w(TAG, "open running run failed for $workflowId", it) }
+            .getOrNull()
+
         if (!entity.enabled) {
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DISABLED, null, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DISABLED, null, "", ledgerId, runRowId)
         }
 
         // Trigger runtime pre-flight — surface "this trigger needs setup" as an explicit
@@ -156,7 +166,7 @@ class WorkflowEngine(
         //  - notification_received without notification listener bound
         //  - app_launched / app_closed without accessibility service running
         triggerRuntimeCheck(def.trigger)?.let { reason ->
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, reason, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, reason, "", ledgerId, runRowId)
         }
 
         // Cooldown gate. NOTE: must use `lastActualFireAtMs` (most-recent SUCCESS/FAILED
@@ -166,7 +176,7 @@ class WorkflowEngine(
         // be satisfied by waiting.
         val lastActualFireMs = if (def.cooldownSeconds > 0) repository.lastActualFireAtMs(workflowId) else null
         if (CooldownGate.isWithinCooldown(def.cooldownSeconds, lastActualFireMs, firedAtMs)) {
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_COOLDOWN, null, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_COOLDOWN, null, "", ledgerId, runRowId)
         }
 
         // Daily-cap gate
@@ -174,7 +184,7 @@ class WorkflowEngine(
             val today = LocalDate.now(ZoneId.systemDefault()).toString()
             val countedToday = if (entity.runsTodayDate == today) entity.runsTodayCount else 0
             if (countedToday >= def.maxRunsPerDay) {
-                return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DAILY_CAP, null, "", ledgerId)
+                return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DAILY_CAP, null, "", ledgerId, runRowId)
             }
         }
 
@@ -188,7 +198,7 @@ class WorkflowEngine(
             if (cr is ConditionEvaluator.Result.FailedAt) {
                 return persistAndReturn(
                     workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_CONDITIONS,
-                    "condition[${cr.index}] failed: ${cr.reason}", "", ledgerId,
+                    "condition[${cr.index}] failed: ${cr.reason}", "", ledgerId, runRowId,
                 )
             }
         }
@@ -217,7 +227,7 @@ class WorkflowEngine(
         }
         if (authoringAssistant == null) {
             return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                "no_workflows_assistant", "", ledgerId)
+                "no_workflows_assistant", "", ledgerId, runRowId)
         }
         // Headless context — sub-agent recursion guard fires from workflow-action
         // dispatch so a workflow's actions can't spawn a sub-agent that re-fires another
@@ -248,7 +258,7 @@ class WorkflowEngine(
                 )
                 return persistAndReturn(
                     workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                    "headless_sensitive_blocked: $names", "", ledgerId,
+                    "headless_sensitive_blocked: $names", "", ledgerId, runRowId,
                 )
             }
         }
@@ -256,7 +266,7 @@ class WorkflowEngine(
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
         val result = actionRunner.run(def.actions, tools, workflowTag = "「${entity.name}」($workflowId)")
         val status = if (result.success) WorkflowRunStatus.SUCCESS else WorkflowRunStatus.FAILED
-        val outcome = persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)
+        val outcome = persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId, runRowId)
 
         // E3 — 一次性工作流：仅在真实执行成功后生效（SKIPPED_* 不算触发）
         if (status == WorkflowRunStatus.SUCCESS) {
@@ -341,16 +351,30 @@ class WorkflowEngine(
         error: String?,
         summary: String,
         ledgerId: String,
+        runRowId: Long?,
     ): FireOutcome {
         val durationMs = (System.nanoTime() - startedNanos) / 1_000_000L
         runCatching {
-            repository.recordFire(
-                workflowId = workflowId,
-                firedAtMs = firedAtMs,
-                status = status,
-                durationMs = durationMs,
-                errorMessage = error,
-            )
+            if (runRowId != null) {
+                // 件③（2.4.5）：RUNNING 行原地 update 为终态（insert+update 两段式）
+                repository.finalizeRun(
+                    rowId = runRowId,
+                    workflowId = workflowId,
+                    firedAtMs = firedAtMs,
+                    status = status,
+                    durationMs = durationMs,
+                    errorMessage = error,
+                )
+            } else {
+                // RUNNING 行没插成功（极边界）：退回一次性 insert 的旧路径
+                repository.recordFire(
+                    workflowId = workflowId,
+                    firedAtMs = firedAtMs,
+                    status = status,
+                    durationMs = durationMs,
+                    errorMessage = error,
+                )
+            }
         }.onFailure { Log.w(TAG, "recordFire failed for $workflowId", it) }
         // Phase 24 — mirror the terminal outcome into the cross-pillar ledger. Every
         // WorkflowRunStatus is terminal from the ledger's point of view: SUCCESS →
