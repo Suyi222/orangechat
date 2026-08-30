@@ -651,6 +651,31 @@ class LocalTools(
                 tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateDeleteTool(svc))
                 tools.add(me.rerere.rikkahub.data.ai.tools.treeshadow.createStateReadPastTool(svc))
             }
+            // F3 annual_ring（2.4.5）：记录者=树（agent/both）时开放年轮手写——树自己在对话里
+            // 落一圈年轮，不依赖系统自动落账；记录者=system 时年轮由系统写，不注册避免双写
+            val recorder = runCatching {
+                org.koin.java.KoinJavaComponent.getKoin().get<me.rerere.rikkahub.data.datastore.SettingsStore>()
+                    .settingsFlow.value.systemToolsSetting.autoRecordRecorder
+            }.getOrDefault("both")
+            val treeHeartService = runCatching {
+                org.koin.core.context.GlobalContext.get()
+                    .get<me.rerere.rikkahub.data.service.TreeHeartService>()
+            }.getOrNull()
+            if (recorder != "system" && treeHeartService != null) {
+                val settingsSnapshot = runCatching {
+                    org.koin.java.KoinJavaComponent.getKoin().get<me.rerere.rikkahub.data.datastore.SettingsStore>()
+                        .settingsFlow.value
+                }.getOrNull()
+                tools.add(
+                    createAnnualRingTool(treeHeartService) {
+                        val sid = invocationContext.callerAssistantId
+                        val ws = sid?.let { aid ->
+                            settingsSnapshot?.assistants?.firstOrNull { it.id.toString() == aid }?.workspaceId
+                        }
+                        ws
+                    }
+                )
+            }
         }
         return tools
     }

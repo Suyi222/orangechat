@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.ui.pages.treeshadow
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,11 +22,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
@@ -45,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -337,14 +341,47 @@ private fun ArchivedTab(
     }
     // 月份折叠状态：默认全部折叠，点月份展开看日期
     val expandedMonths = remember { mutableStateMapOf<String, Boolean>() }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    // B4.2 了结（2.4.5 F2）：月份跳转 chips——长列表快速定位，不做拖动滑条。
+    fun scrollToMonth(month: String) {
+        expandedMonths[month] = true
+        // 目标 item 序号 = 标题(1) + 之前各月 (月份行 1 + 已展开的日期数)
+        var index = 1
+        for ((m, dates) in months) {
+            if (m == month) break
+            index += 1 + (if (expandedMonths[m] == true) dates.size else 0)
+        }
+        scope.launch { listState.animateScrollToItem(index) }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
             SectionTitle("已归档的日子")
+        }
+        if (archivedDates.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    months.keys.forEach { month ->
+                        FilterChip(
+                            selected = false,
+                            onClick = { scrollToMonth(month) },
+                            label = { Text(month) },
+                        )
+                    }
+                }
+            }
         }
         if (archivedDates.isEmpty()) {
             item {

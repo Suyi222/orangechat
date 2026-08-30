@@ -583,6 +583,12 @@ class GenerationHandler(
                     if (statePrompt.isNotBlank()) {
                         append(statePrompt)
                     }
+                    // F3（2.4.5）：记录者=树（agent/both）时提示 annual_ring 可用——与 LocalTools
+                    // 的工具注册条件一致；记录者=system 时年轮由系统落账，不提示不注册
+                    if (settings.systemToolsSetting.autoRecordRecorder != "system") {
+                        appendLine()
+                        appendLine("（如果这段对话对你这棵树很重要，你可以用 annual_ring 工具亲手写一圈年轮——写你此刻真实的自我观察，一天最多一圈。）")
+                    }
                 }
 
             }
