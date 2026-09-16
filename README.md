@@ -9,6 +9,7 @@
 <p>基于 <a href="https://github.com/rikkahub/rikkahub">RikkaHub</a> 深度定制的 Android AI 客户端<br/>在原生聊天体验之上，构建了完整的插件生态与智能生活服务</p>
 
 <p>
+  <img src="https://img.shields.io/badge/%E9%9A%99%E5%85%89-2.4.5%20%28vc167%29-3d7a3d" alt="隙光 2.4.5" />
   <img src="https://img.shields.io/badge/Kotlin-100%25-7F52FF" alt="Kotlin" />
   <img src="https://img.shields.io/badge/Android-26%2B-green" alt="Android" />
   <img src="https://img.shields.io/badge/License-AGPL%20v3-red" alt="License" />
@@ -30,10 +31,12 @@ RikkaHub（原作者 RE 开源）
 
 - **尊重前人**：原作者 RE、橘瓣开发者 sue1231513 的代码、注释、署名全部原样保留（AGPL v3 开源协议）
 - **新增内容**：小园丁自己加的功能与文件，用「隙光」命名
+- **2.4.5 新功能（当前版本 · versionCode 167 · 即 2.5.0-beta.1）**：🌳 老助手自动迁移开启树影下 + 闲置「到点即结」自动总结（退后台即查 + 15 分钟 Worker 兜底）· 📨 晨信双信根治（触发计数语义对齐 + 重启判重 + RUNNING 先行落盘）· 💾 备份扩展（插件数据 + 工作区文件入备份，新增工作区恢复面板）· 🖥️ 插件页渲染进程被杀自动重建 · 🗓️ 树影下归档月份跳转 chips + 🌱 annual_ring 年轮手写工具
+- **2.4.2 ~ 2.4.4 修复与返工**：🫧 悬浮球软渲染崩溃修复 · 💉 树心注入只取「注入文本」一行 + 见证分流（日级→自我宣言 / 月级→self.md 段内节流）· 🎛️ 设置页四处输入控件被 ListItem 槽位静默丢弃修复 · 📡 主动消息 ProactiveTrace 全链路埋点 · 🔒 自我指针中性化等 hotfix 十件
 - **2.4.1 新功能**：🧩 插件环境 v2 —— Bridge v2 原生通道（无 URL 长度上限，异常自动回落）· 📋 JS console 进 logcat + debug 包 chrome://inspect · 🖥️ 渲染兜底（softwareRender）· 🚀 新 Bridge API（getEnvInfo / 同步存储 / showToast / Bridge.on 事件）· 📜 minEnvVersion 环境契约（现有插件零改动）
 - **2.4.0 新功能**：🌲 树影下 2.0（删改/读往日/自动记录开关组）· 🧠 tree_heart 活化（开场浮现/自动落账/自动见证）· 🔍 历史检索修复 + search_chat_history · 👻 工作流一次性模式 + 暴露开关 · 🍊 修 Coil 崩溃
 - **2.3.0 新功能**：🌲 树影下状态系统 · 🕐 随机时间触发器 · 🛡️ 后台工具总开关 · 🔔 工作流主动唤醒卡
-- 📝 更新说明：[docs/RELEASE-2026-08-19-xiguang-2.4.1.md](docs/RELEASE-2026-08-19-xiguang-2.4.1.md)（2.4.1）｜ [docs/RELEASE-2026-08-12-xiguang-2.4.0.md](docs/RELEASE-2026-08-12-xiguang-2.4.0.md)（2.4.0）｜ [docs/RELEASE-2026-08-04-xiguang-2.3.0.md](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)（2.3.0）
+- 📝 更新说明（新→旧）：[2.4.5](docs/RELEASE-2026-08-30-xiguang-2.4.5.md) ｜ [2.4.4](docs/RELEASE-2026-08-29-xiguang-2.4.4.md) ｜ [2.4.3](docs/RELEASE-2026-08-29-xiguang-2.4.3.md) ｜ [2.4.2](docs/RELEASE-2026-08-29-xiguang-2.4.2.md) ｜ [2.4.1](docs/RELEASE-2026-08-19-xiguang-2.4.1.md) ｜ [2.4.0](docs/RELEASE-2026-08-12-xiguang-2.4.0.md) ｜ [2.3.1](docs/RELEASE-2026-08-08-xiguang-2.3.1.md) ｜ [2.3.0](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)
 - 🛠️ 实现文档：[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
 - 🔀 开发分支：`feature/workflow-widget-v2`
 
@@ -255,7 +258,7 @@ exports.say_hello = say_hello;
 - **promptTemplate** — 为插件添加系统提示词模板
 - **hooks** — 监听 `message_sent`、`message_received`、`daily_cron` 事件
 - **ui** — 声明式 UI，App 渲染为原生 Compose Material 3 界面
-- **customPageWebView** — 自定义 WebView 页面；页面内 `window.Bridge` 自 2.4.1 起升级为插件环境 v2（原生通道无长度上限 / `getEnvInfo()` 能力探测 / `getDataSync` 等同步存储 / `Bridge.on` 事件），可用 manifest `minEnvVersion` 声明最低环境版本
+- **customPageWebView** — 自定义 WebView 页面；页面内 `window.Bridge` 自 2.4.1 起升级为插件环境 v2（原生通道无长度上限 / `getEnvInfo()` 能力探测 / `getDataSync` 等同步存储 / `Bridge.on` 事件），可用 manifest `minEnvVersion` 声明最低环境版本；2.4.5 起渲染进程被系统杀掉后自动销毁重建（`onRenderProcessGone`），插件页不再白屏
 
 > 💡 安装内置的 **插件开发指南** 插件后，AI 可查阅完整文档（quickstart/manifest/mainjs/sandbox/hooks/declarative_ui 等 13 个主题）
 
