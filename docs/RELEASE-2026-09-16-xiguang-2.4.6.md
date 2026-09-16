@@ -78,3 +78,26 @@ adb install -r app-arm64-v8a-release.apk
 
 - 本版是**止血**不是根治：热窗口（最近 1000 条）/ 单行落库 / onTrimMemory 在 2.5.0-beta.2（整批验收：5500 条窗口峰值 < 300MB）。
 - H7 主动消息取证：装机后复现「消失」时导出 ProactiveTrace 日志，用来给 beta.2 的主动消息根治确诊。
+##  装机回访（2026-09-16 晚 · 实测）
+
+### ✅ 通过
+
+- **保活改型生效**：`dumpsys activity services` 显示 `isForeground=true ... types=0x40000000`（SPECIAL_USE），dataSync 配额处决的隐患解除
+- 状态卡活了、树影下没问题、插件没问题；期间**无崩溃记录**（dropbox 干净）
+
+### ⚠️ 未过 / 待续
+
+- **消息生成依旧卡顿**，大窗口与**多上下文窗口卡顿严重**——这是驻留层问题，归 2.5.0-beta.2（B4 热窗口），**不记本版的账**
+- **多上下文窗口特别容易复现特殊 token 泄露**——已定位本版清洗的缺口（Reasoning 思考流分支未清洗），修复**未随本版发布**（见下）
+- thinking 偶发漏进正文（大窗口 + 工具调用如调插件时；其它窗口流畅）
+
+### 📊 实测数据
+
+- 渲染（`dumpsys gfxinfo`）：Total 56175 帧；50th 12ms / 90th 15ms / 95th 22ms / 99th 32ms；legacy janky 62.5% → 基线紧贴 16.6ms 帧预算
+- 内存（12 分钟采样 90 点）：PSS 184MB → 400~665MB（峰值 892MB），SWAP 已用 121MB；细分 Java Heap 236MB / Native 112MB / Graphics 77MB
+
+### 🔧 后续补丁（未随 2.4.6 发布）
+
+思考流（Reasoning part）此前未过 token 清洗，而 `groupMessageParts()` 把思考与工具分组成思考块、**与正文同屏渲染**，漏出来一样看得见。修复已进 master（`6f8cba96`）：Reasoning 拼接/新建清洗 + 落库兜底覆盖 Text 与 Reasoning。
+
+**为什么不立刻发**：泄露形态可能是 `<|...|>`（落在现有规则内），也可能是 ` thinking` 这类文本标签（不归现有规则管）。规则未确诊就删文本比留着更危险——等样本到手随 **2.4.6.1** 一起发。
