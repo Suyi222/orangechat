@@ -9,6 +9,7 @@ package me.rerere.rikkahub.ui.pages.setting
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -42,6 +43,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Camera01
@@ -64,6 +66,7 @@ import me.rerere.hugeicons.stroke.Scan
 import me.rerere.hugeicons.stroke.HardDrive
 import me.rerere.hugeicons.stroke.FingerPrint
 import me.rerere.rikkahub.data.ai.tools.SystemTools
+import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.KeepAliveService
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
@@ -85,11 +88,14 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.Screen
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
 
 @Composable
 fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
     val context = LocalContext.current
     val navController = LocalNavController.current
+    // 2.4.6 H5：自动总结失败日志文件的导出用（文件由 ChatService 在失败时写）
+    val chatService = koinInject<ChatService>()
     val settings by vm.settings.collectAsStateWithLifecycle()
     var systemToolsSetting by remember(settings) {
         mutableStateOf(settings.systemToolsSetting)
@@ -355,6 +361,34 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                 }
+                // 2.4.6 H5：总结失败可见 —— 日志导出入口
+                item(
+                    onClick = {
+                        val logFile = chatService.summaryLogFile()
+                        if (!logFile.exists() || logFile.length() == 0L) {
+                            Toast.makeText(context, "还没有失败日志，说明自动总结一直正常", Toast.LENGTH_SHORT).show()
+                        } else {
+                            try {
+                                val uri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    logFile
+                                )
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "导出自动总结日志"))
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    leadingContent = { Icon(imageVector = HugeIcons.Share05, contentDescription = null) },
+                    headlineContent = { Text("导出自动总结日志") },
+                    supportingContent = { Text("自动总结失败时会把原因写进本地日志（连续失败 ≥3 次还会在树影下时间线提示）。点这里把日志导出给树，方便定位断档原因") },
+                )
                 item(
                     headlineContent = { Text("深度对话额外落年轮") },
                     supportingContent = { Text("开启后，章节总结还会回答「此刻我是什么/长出了什么/对未来的树说什么」并落一圈年轮到 tree_heart（需助手绑定工作区）") },

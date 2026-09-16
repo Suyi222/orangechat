@@ -203,10 +203,86 @@ class ChatService(
         const val KEY_MSG_COUNT_DATE = "msg_count_date"
         // B3.8 章节边界：上次总结时会话消息条数快照（跨天不重置），总结窗口 = 此边界之后的新消息
         const val KEY_SEGMENT_BASE_COUNT = "segment_base_count"
+        // 2.4.6 H5：自动总结失败退避 + 可见性（失败不再每 15 分钟连环全量重试）
+        const val KEY_SUMMARY_FAIL_COUNT = "summary_fail_count"
+        const val KEY_SUMMARY_NEXT_RETRY_AT = "summary_next_retry_at"
+        const val KEY_SUMMARY_LAST_ERROR = "summary_last_error"
+        const val KEY_SUMMARY_FAIL_NOTIFIED = "summary_fail_notified"
+        const val SUMMARY_LOG_FILE = "tree_shadow_summary.log"
+        const val SUMMARY_LOG_MAX_BYTES = 256 * 1024L
+        const val SUMMARY_FAIL_NOTIFY_THRESHOLD = 3
     }
 
     private fun treeShadowPrefs() =
         context.getSharedPreferences(TREE_SHADOW_PREFS, Context.MODE_PRIVATE)
+
+    // ---- 2.4.6 H5：自动总结的失败退避与可见性 ----
+
+    /** 失败退避阶梯（分钟）：15 → 30 → 60 → 120 → 240（封顶）。 */
+    private val summaryRetryBackoffMinutes = longArrayOf(15L, 30L, 60L, 120L, 240L)
+
+    /** 总结失败日志文件（可在树影下设置里导出）。 */
+    fun summaryLogFile(): java.io.File = java.io.File(context.filesDir, SUMMARY_LOG_FILE)
+
+    /** 是否还在失败退避窗口内（在窗口内不再发起总结，避免失败后连环全量加载）。 */
+    private fun isSummaryBackingOff(): Boolean {
+        val nextRetryAt = treeShadowPrefs().getLong(KEY_SUMMARY_NEXT_RETRY_AT, 0L)
+        return nextRetryAt > System.currentTimeMillis()
+    }
+
+    /**
+     * 记录一次总结失败：失败计数 +1、按阶梯推迟下次重试、写本地日志文件；
+     * 连续失败达到阈值时往树影下时间线插一条系统提示（用户看得见「总结挂了」）。
+     *
+     * 旧行为：失败后 baseCount 不推进，每 15 分钟原样重试一次，每次都全量加载会话，
+     * 形成「失败 → 恶性重试 → 内存压力更大 → 更容易失败」的循环。
+     */
+    private suspend fun recordSummaryFailure(reason: String) {
+        val prefs = treeShadowPrefs()
+        val failCount = prefs.getInt(KEY_SUMMARY_FAIL_COUNT, 0) + 1
+        val backoffIndex = (failCount - 1).coerceIn(0, summaryRetryBackoffMinutes.lastIndex)
+        val backoffMinutes = summaryRetryBackoffMinutes[backoffIndex]
+        prefs.edit()
+            .putInt(KEY_SUMMARY_FAIL_COUNT, failCount)
+            .putLong(KEY_SUMMARY_NEXT_RETRY_AT, System.currentTimeMillis() + backoffMinutes * 60_000L)
+            .putString(KEY_SUMMARY_LAST_ERROR, reason)
+            .apply()
+        appendSummaryLog("FAIL #$failCount: $reason（${backoffMinutes} 分钟后才允许重试）")
+        Log.w(TAG, "TreeShadow summary failed #$failCount: $reason, next retry in ${backoffMinutes}min")
+        if (failCount >= SUMMARY_FAIL_NOTIFY_THRESHOLD && !prefs.getBoolean(KEY_SUMMARY_FAIL_NOTIFIED, false)) {
+            prefs.edit().putBoolean(KEY_SUMMARY_FAIL_NOTIFIED, true).apply()
+            runCatching {
+                treeShadowService?.appendTimeline(
+                    TreeShadowService.today(),
+                    "⚠️ 自动总结连续失败 $failCount 次（$reason）。已自动放慢重试、不会反复打扰；" +
+                        "修好后会自己恢复，日志可在「树影下」设置里导出。"
+                )
+            }.onFailure { Log.w(TAG, "append summary failure notice failed", it) }
+        }
+    }
+
+    /** 总结成功：清空失败计数与退避，让系统提示可以再次触发。 */
+    private fun recordSummarySuccess() {
+        treeShadowPrefs().edit()
+            .remove(KEY_SUMMARY_FAIL_COUNT)
+            .remove(KEY_SUMMARY_NEXT_RETRY_AT)
+            .remove(KEY_SUMMARY_LAST_ERROR)
+            .remove(KEY_SUMMARY_FAIL_NOTIFIED)
+            .apply()
+    }
+
+    /** 把总结失败原因追加进本地日志文件；超过上限时保留后半段，避免无限增长。 */
+    private fun appendSummaryLog(line: String) {
+        runCatching {
+            val file = summaryLogFile()
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            file.appendText("[$ts] $line\n")
+            if (file.length() > SUMMARY_LOG_MAX_BYTES) {
+                file.writeText(file.readText().takeLast((SUMMARY_LOG_MAX_BYTES / 2).toInt()))
+            }
+        }.onFailure { Log.w(TAG, "appendSummaryLog failed", it) }
+    }
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
 
@@ -1255,6 +1331,8 @@ class ChatService(
      */
     private fun checkIdleTriggerAndSummarize(conversationId: Uuid): Boolean {
         if (segmentSummaryRunning) return false
+        // 2.4.6 H5：失败退避窗口内直接跳过，避免每 15 分钟连环全量重试
+        if (isSummaryBackingOff()) return false
         val settings = runCatching { settingsStore.settingsFlow.value }.getOrNull() ?: return false
         val cfg = settings.systemToolsSetting
         if (!cfg.autoRecordEnabled) return false
@@ -1287,6 +1365,7 @@ class ChatService(
                 summarizeSegment(conversationId, triggerDate, baseCount)
             } catch (e: Exception) {
                 Log.w(TAG, "TreeShadow idle summary failed, conversationId=$conversationId", e)
+                recordSummaryFailure("生成请求异常：${e.message ?: e.javaClass.simpleName}")
             } finally {
                 segmentSummaryRunning = false
             }
@@ -1317,7 +1396,7 @@ class ChatService(
 
         // 触发② 章节轮转（默认关，独立开关；按日分组，跨天重置）
         var chapterHit = false
-        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
+        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0 && !isSummaryBackingOff()) {
             val today = TreeShadowService.today()
             val countDate = prefs.getString(KEY_MSG_COUNT_DATE, null)
             val count = if (countDate == today) prefs.getInt(KEY_MSG_COUNT, 0) else 0
@@ -1339,6 +1418,7 @@ class ChatService(
                 summarizeSegment(conversationId, finalDate, baseCount)
             } catch (e: Exception) {
                 Log.w(TAG, "TreeShadow segment summary failed, conversationId=$conversationId", e)
+                recordSummaryFailure("生成请求异常：${e.message ?: e.javaClass.simpleName}")
             } finally {
                 segmentSummaryRunning = false
             }
@@ -1360,15 +1440,18 @@ class ChatService(
             ?: settings.getCurrentChatModel()
             ?: run {
                 Log.w("TreeShadowSummary", "summarizeSegment skip: model not found (id=$modelId, conversationId=$conversationId)")
+                recordSummaryFailure("模型未配置或不可用")
                 return
             }
         val provider = model.findProvider(settings.providers) ?: run {
             Log.w("TreeShadowSummary", "summarizeSegment skip: provider missing for model=${model.modelId} (conversationId=$conversationId)")
+            recordSummaryFailure("模型服务商配置缺失")
             return
         }
         val providerHandler = providerManager.getProviderByType(provider)
         val conversation = conversationRepo.getConversationById(conversationId) ?: run {
             Log.w("TreeShadowSummary", "summarizeSegment skip: conversation missing (conversationId=$conversationId)")
+            recordSummaryFailure("会话不存在或读取失败")
             return
         }
         // B3.8 完整一章：窗口 = 上次总结边界以来的全部消息（上限 60 条防上下文爆掉）。
@@ -1378,6 +1461,7 @@ class ChatService(
         val recent = window.ifEmpty { all.takeLast(12) }
         if (recent.isEmpty()) {
             Log.w("TreeShadowSummary", "summarizeSegment skip: empty window (conversationId=$conversationId, total=${all.size}, base=$baseCount)")
+            recordSummaryFailure("没有可总结的消息窗口")
             return
         }
         val content = recent.joinToString("\n\n") { it.summaryAsText() }
@@ -1395,11 +1479,14 @@ class ChatService(
         val summary = result.choices[0].message?.toText()?.trim().orEmpty()
         if (summary.isBlank() || summary.length > 200) {
             Log.w("TreeShadowSummary", "summarizeSegment skip: summary blank or too long (len=${summary.length}, conversationId=$conversationId)")
+            recordSummaryFailure("总结内容为空或过长（${summary.length} 字）")
             return
         }
         treeShadowService?.appendTimeline(dateGroup, summary)
         // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章
         treeShadowPrefs().edit().putInt(KEY_SEGMENT_BASE_COUNT, all.size).apply()
+        // 2.4.6 H5：成功即清空失败计数与退避
+        recordSummarySuccess()
         Log.i(TAG, "TreeShadow segment summary appended [$dateGroup]: $summary")
 
         // C3.1 自动落账：勾选「深度对话额外落年轮」时，把这一章同时写进 tree_heart 年轮

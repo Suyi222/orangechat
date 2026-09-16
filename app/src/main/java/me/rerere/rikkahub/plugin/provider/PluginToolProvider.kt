@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.plugin.provider
 
+import android.util.Log
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -19,6 +20,8 @@ import me.rerere.rikkahub.plugin.loader.LoadedPlugin
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
+
+private const val TAG = "PluginToolProvider"
 
 /**
  * 插件工具提供者
@@ -124,11 +127,37 @@ class PluginToolProvider(
         toolDef: PluginToolDefinition,
         params: JsonElement
     ): List<UIMessagePart> {
-        val result = pluginLoader.callTool(
+        var result = pluginLoader.callTool(
             pluginId = plugin.id,
             toolName = toolDef.name,
             params = params
         )
+
+        // 2.4.6 H6：调用 miss 时自愈一次。
+        // 内存压力下 QuickJS 加载失败 / 沙箱异常会让「已注册的插件缺员」，旧行为直接把
+        // "Tool not found" 抛回给模型，模型对用户转述成「插件不存在」——不可见也不可恢复。
+        // 这里卸载重载后再试一次（只一次，防循环）。
+        if (result.isFailure && needsSelfHeal(result)) {
+            val reason = result.exceptionOrNull()?.message ?: "unknown"
+            Log.w(TAG, "tool call miss, self-heal reload once: plugin=${plugin.id}, tool=${toolDef.name}, reason=$reason")
+            val reloaded = try {
+                pluginLoader.unloadPlugin(plugin.id)
+                pluginLoader.loadPlugin(plugin.info)
+            } catch (e: Exception) {
+                Log.e(TAG, "self-heal reload failed: plugin=${plugin.id}", e)
+                Result.failure(e)
+            }
+            if (reloaded.isSuccess) {
+                result = pluginLoader.callTool(
+                    pluginId = plugin.id,
+                    toolName = toolDef.name,
+                    params = params
+                )
+                if (result.isSuccess) {
+                    Log.i(TAG, "self-heal succeeded: plugin=${plugin.id}, tool=${toolDef.name}")
+                }
+            }
+        }
 
         return result.fold(
             onSuccess = { jsonElement ->
@@ -143,6 +172,16 @@ class PluginToolProvider(
                 listOf(UIMessagePart.Text(errorObj.toString()))
             }
         )
+    }
+
+    /**
+     * 哪些失败值得「重载一次再试」：插件未加载（Plugin not loaded）或工具缺员（Tool not found），
+     * 二者都是内存压力下 QuickJS 加载失败族的表象。参数错误、沙箱业务异常等不在此列，
+     * 避免把真正的调用错误也重试一遍。
+     */
+    private fun needsSelfHeal(result: Result<JsonElement>): Boolean {
+        val message = result.exceptionOrNull()?.message ?: return false
+        return message.startsWith("Tool not found") || message.startsWith("Plugin not loaded")
     }
 
     /**
