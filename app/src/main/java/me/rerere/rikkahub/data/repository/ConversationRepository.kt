@@ -47,23 +47,28 @@ private const val TAG = "ConversationRepository"
  * 整批不含 "<|" 时零拷贝返回原列表（一次遍历的廉价短路），不会给保存路径加负担。
  */
 private fun List<MessageNode>.sanitizeSpecialTokens(): List<MessageNode> {
-    val dirty = any { node ->
-        node.messages.any { message ->
-            message.parts.any { it is UIMessagePart.Text && SpecialTokenFilter.maybeContainsToken(it.text) }
-        }
-    }
+    val dirty = any { node -> node.messages.any { message -> message.parts.any { it.hasSpecialToken() } } }
     if (!dirty) return this
     return map { node ->
         node.copy(messages = node.messages.map { message ->
-            if (message.parts.none { it is UIMessagePart.Text && SpecialTokenFilter.maybeContainsToken(it.text) }) {
-                message
-            } else {
-                message.copy(parts = message.parts.map { part ->
-                    if (part is UIMessagePart.Text) part.copy(text = SpecialTokenFilter.sanitize(part.text)) else part
-                })
-            }
+            if (message.parts.none { it.hasSpecialToken() }) message
+            else message.copy(parts = message.parts.map { it.sanitizeSpecialToken() })
         })
     }
+}
+
+/** 这一段文本类 part（正文 / 思考）里是否疑似有模型控制 token。 */
+private fun UIMessagePart.hasSpecialToken(): Boolean = when (this) {
+    is UIMessagePart.Text -> SpecialTokenFilter.maybeContainsToken(text)
+    is UIMessagePart.Reasoning -> SpecialTokenFilter.maybeContainsToken(reasoning)
+    else -> false
+}
+
+/** 清洗一段文本类 part（正文 / 思考）；其它 part 原样返回。 */
+private fun UIMessagePart.sanitizeSpecialToken(): UIMessagePart = when (this) {
+    is UIMessagePart.Text -> copy(text = SpecialTokenFilter.sanitize(text))
+    is UIMessagePart.Reasoning -> copy(reasoning = SpecialTokenFilter.sanitize(reasoning))
+    else -> this
 }
 
 class ConversationRepository(

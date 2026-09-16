@@ -89,7 +89,9 @@ data class UIMessage(
                             if (lastPart is UIMessagePart.Reasoning) {
                                 // Append to the last Reasoning part
                                 acc.dropLast(1) + UIMessagePart.Reasoning(
-                                    reasoning = lastPart.reasoning + deltaPart.reasoning,
+                                    // 2.4.6 H1 补：思考流同样会漏控制 token（大上下文窗口下尤其常见），
+                                    // 且思考块与正文同屏，漏出来用户一样看得见 —— 用同一条规则清洗。
+                                    reasoning = SpecialTokenFilter.sanitize(lastPart.reasoning + deltaPart.reasoning),
                                     createdAt = lastPart.createdAt,
                                     finishedAt = null,
                                 ).also {
@@ -97,7 +99,7 @@ data class UIMessage(
                                 }
                             } else {
                                 // Create new Reasoning part
-                                acc + deltaPart
+                                acc + deltaPart.copy(reasoning = SpecialTokenFilter.sanitize(deltaPart.reasoning))
                             }
                         }
                     }
