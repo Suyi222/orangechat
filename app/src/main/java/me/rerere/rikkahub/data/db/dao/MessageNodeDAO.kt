@@ -59,6 +59,21 @@ interface MessageNodeDAO {
         offset: Int
     ): List<MessageNodeEntity>
 
+    /**
+     * 2.4.6 H4：只取会话最后一个 node 的「最后一条消息 createdAt」。
+     * 直接在 SQL 层用 json_extract 取值，不把 messages blob 读进 JVM 堆——
+     * 旧实现走 getConversationById 全量加载整会话（5500 条窗口下是几十 MB 分配）。
+     * 语义与旧逻辑一致：node_index 最大的那个 node 的 messages 数组最后一项。
+     */
+    @Query(
+        "SELECT CASE WHEN json_array_length(messages) > 0 " +
+            "THEN json_extract(messages, '\$[' || (json_array_length(messages) - 1) || '].createdAt') " +
+            "ELSE NULL END " +
+            "FROM message_node WHERE conversation_id = :conversationId " +
+            "ORDER BY node_index DESC LIMIT 1"
+    )
+    suspend fun getLastMessageCreatedAt(conversationId: String): String?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(nodes: List<MessageNodeEntity>)
 

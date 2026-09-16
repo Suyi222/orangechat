@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -19,8 +19,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.SpecialTokenFilter
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
@@ -36,6 +40,31 @@ import java.time.Instant
 import kotlin.uuid.Uuid
 
 private const val TAG = "ConversationRepository"
+
+/**
+ * 2.4.6 H1 落库兜底：清洗正文里的模型特殊 token（<|begin_of_sentence|> 等）。
+ * 流式链路已在 UIMessage.appendChunk 清洗，这里兜住其它写入路径；
+ * 整批不含 "<|" 时零拷贝返回原列表（一次遍历的廉价短路），不会给保存路径加负担。
+ */
+private fun List<MessageNode>.sanitizeSpecialTokens(): List<MessageNode> {
+    val dirty = any { node ->
+        node.messages.any { message ->
+            message.parts.any { it is UIMessagePart.Text && SpecialTokenFilter.maybeContainsToken(it.text) }
+        }
+    }
+    if (!dirty) return this
+    return map { node ->
+        node.copy(messages = node.messages.map { message ->
+            if (message.parts.none { it is UIMessagePart.Text && SpecialTokenFilter.maybeContainsToken(it.text) }) {
+                message
+            } else {
+                message.copy(parts = message.parts.map { part ->
+                    if (part is UIMessagePart.Text) part.copy(text = SpecialTokenFilter.sanitize(part.text)) else part
+                })
+            }
+        })
+    }
+}
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
@@ -57,6 +86,42 @@ class ConversationRepository(
         ).map { entity ->
             val nodes = loadMessageNodes(entity.id)
             conversationEntityToConversation(entity, nodes)
+        }
+    }
+
+    /**
+     * 2.4.6 H3：Recent Chats 目录专用轻查询——只读标题/时间等轻列，零消息节点加载。
+     *
+     * 旧路径 [getRecentConversations] 会把最近 10 个会话的全部消息节点反序列化进内存，
+     * 而提示词拼接只用到 title + 更新日期；5500 条窗口在 recent 列表里时，
+     * 每发一条消息就全量反序列化一次（几十 MB 级分配），是这次 OOM 的头号热点。
+     */
+    suspend fun getRecentConversationSummaries(assistantId: Uuid, limit: Int = 10): List<Conversation> {
+        return conversationDAO.getRecentConversationSummaries(assistantId.toString(), limit)
+            .map { conversationSummaryToConversation(it) }
+    }
+
+    /** 2.4.6 H4：只取最近会话的 id，不加载任何消息节点。 */
+    suspend fun getRecentConversationId(assistantId: Uuid): Uuid? {
+        return conversationDAO.getRecentConversationSummaries(assistantId.toString(), 1)
+            .firstOrNull()?.id?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+    }
+
+    /**
+     * 2.4.6 H4：只读会话最后一条消息的时间（epoch ms），失败返回 null。
+     * SQL 层 json_extract 直接取字段，不把 messages blob 读进堆，也不解析 JSON。
+     */
+    suspend fun getLastMessageTimeMs(conversationId: Uuid): Long? {
+        return try {
+            val raw = messageNodeDAO.getLastMessageCreatedAt(conversationId.toString()) ?: return null
+            runCatching {
+                LocalDateTime.parse(raw)
+                    .toInstant(TimeZone.currentSystemDefault())
+                    .toEpochMilliseconds()
+            }.getOrNull()
+        } catch (e: Exception) {
+            Log.w(TAG, "getLastMessageTimeMs failed, conversationId=$conversationId", e)
+            null
         }
     }
 
@@ -241,14 +306,15 @@ class ConversationRepository(
     }
 
     suspend fun insertConversation(conversation: Conversation) {
+        val sanitizedNodes = conversation.messageNodes.sanitizeSpecialTokens()
         try {
             database.withTransaction {
                 conversationDAO.insert(
                     conversationToConversationEntity(conversation)
                 )
-                saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+                saveMessageNodes(conversation.id.toString(), sanitizedNodes)
             }
-            messageFtsManager.indexConversation(conversation)
+            messageFtsManager.indexConversation(conversation.copy(messageNodes = sanitizedNodes))
         } catch (e: Exception) {
             Log.e(TAG, "insertConversation failed, conversationId=${conversation.id}", e)
             throw e
@@ -279,7 +345,8 @@ class ConversationRepository(
                 // 只查 id，不碰 messages 列，避免因个别行 blob 过大导致这里直接抛异常
                 val existingIds = messageNodeDAO.getNodeIdsOfConversation(conversation.id.toString()).toSet()
 
-                val newEntities = conversation.messageNodes.mapIndexed { index, node ->
+                val sanitizedNodes = conversation.messageNodes.sanitizeSpecialTokens()
+                val newEntities = sanitizedNodes.mapIndexed { index, node ->
                     MessageNodeEntity(
                         id = node.id.toString(),
                         conversationId = conversation.id.toString(),
@@ -330,7 +397,7 @@ class ConversationRepository(
                         conversationTitle = conversation.title,
                         updateAt = conversation.updateAt,
                         changedNodeIds = changedNodeIds,
-                        currentNodes = conversation.messageNodes,
+                        currentNodes = sanitizedNodes,
                     )
                 }
             }

@@ -357,13 +357,10 @@ class ProactiveMessageService : KoinComponent {
         return try {
             val settings = settingsStore.settingsFlow.first()
             val assistantId = settings.assistantId
-            val recentConversations = conversationRepository.getRecentConversations(assistantId, limit = 1)
-            if (recentConversations.isNotEmpty()) {
-                val conv = recentConversations.first()
-                val fullConv = conversationRepository.getConversationById(conv.id)
-                val localDateTime: LocalDateTime? = fullConv?.messageNodes?.lastOrNull()?.messages?.lastOrNull()?.createdAt
-                localDateTime?.toInstant(TimeZone.currentSystemDefault())
-            } else null
+            // 2.4.6 H4：轻查询（最近会话 id + SQL 尾查询），不再全量加载整个会话
+            val recentId = conversationRepository.getRecentConversationId(assistantId)
+            val lastMs = recentId?.let { conversationRepository.getLastMessageTimeMs(it) }
+            lastMs?.let { kotlinx.datetime.Instant.fromEpochMilliseconds(it) }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get last message time", e)
             null
@@ -539,10 +536,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 找到最近的对话
-                val recentConversations = conversationRepository.getRecentConversations(assistantUuid, limit = 1)
-                val conversation = if (recentConversations.isNotEmpty()) {
-                    conversationRepository.getConversationById(recentConversations.first().id)
-                } else null
+                // 2.4.6 H4：先用轻查询拿 id（旧写法 getRecentConversations 已经把全部消息节点加载了一遍，
+                // 这里又 getConversationById 再来一遍 = 双重全量加载）。
+                // 下面确实需要完整会话（要塞进 session 防流式覆盖历史），所以保留这一次全量加载。
+                val recentId = conversationRepository.getRecentConversationId(assistantUuid)
+                val conversation = recentId?.let { conversationRepository.getConversationById(it) }
 
                 conversationId = conversation?.id ?: kotlin.uuid.Uuid.random()
                 val conversationId = conversationId!!

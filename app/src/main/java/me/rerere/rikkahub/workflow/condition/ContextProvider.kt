@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -73,15 +73,9 @@ class ContextProvider(
     @SuppressLint("VisibleForTests")
     private suspend fun lastChatMessageMs(): Long? = try {
         val assistantId = settingsStore.settingsFlow.first().assistantId
-        val recent = conversationRepository.getRecentConversations(assistantId, limit = 1)
-        if (recent.isEmpty()) null
-        else {
-            val conv = recent.first()
-            val fullConv = conversationRepository.getConversationById(conv.id)
-            val createdAt: LocalDateTime? =
-                fullConv?.messageNodes?.lastOrNull()?.messages?.lastOrNull()?.createdAt
-            createdAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
-        }
+        // 2.4.6 H4：轻查询拿最近会话 id + SQL 尾查询取最后消息时间，不再全量加载整个会话
+        val recentId = conversationRepository.getRecentConversationId(assistantId)
+        if (recentId == null) null else conversationRepository.getLastMessageTimeMs(recentId)
     } catch (e: Throwable) {
         Log.w(TAG, "lastChatMessageMs: lookup failed", e)
         null

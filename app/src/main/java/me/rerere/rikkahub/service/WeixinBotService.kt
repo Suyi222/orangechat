@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -160,8 +160,8 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
         }
 
         // 复用助手最近一个会话; 没有就新建一个固定 Uuid
-        val recent = conversationRepository.getRecentConversations(assistant.id, limit = 1)
-        val conversationId = recent.firstOrNull()?.id ?: Uuid.random()
+        // 2.4.6 H4：这里只需要「最近会话 id」，用零节点加载的轻查询
+        val conversationId = conversationRepository.getRecentConversationId(assistant.id) ?: Uuid.random()
 
         // 同步会话到 ChatService 的 session 缓存, 防止流式更新覆盖历史
         chatService.addConversationReference(conversationId)

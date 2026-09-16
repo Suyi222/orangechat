@@ -75,7 +75,9 @@ internal suspend fun buildRecentChatsPrompt(
     assistant: Assistant,
     conversationRepo: ConversationRepository
 ): String {
-    val recentConversations = conversationRepo.getRecentConversations(
+    // 2.4.6 H3：改用零节点加载的轻查询——这里只用到 title / updateAt，
+    // 旧路径会把最近 10 个会话的全部消息节点反序列化进内存（头号内存热点）。
+    val recentConversations = conversationRepo.getRecentConversationSummaries(
         assistantId = assistant.id,
         limit = 10,
     )

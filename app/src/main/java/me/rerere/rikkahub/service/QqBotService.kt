@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -366,8 +366,8 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
         val settings = settingsStore.settingsFlow.first()
         val assistant = settings.getCurrentAssistant()
 
-        val recent = conversationRepository.getRecentConversations(assistant.id, limit = 1)
-        val conversationId = recent.firstOrNull()?.id ?: Uuid.random()
+        // 2.4.6 H4：这里只需要「最近会话 id」，用零节点加载的轻查询
+        val conversationId = conversationRepository.getRecentConversationId(assistant.id) ?: Uuid.random()
 
         chatService.addConversationReference(conversationId)
 
