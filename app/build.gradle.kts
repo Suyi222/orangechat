@@ -19,8 +19,8 @@ android {
         applicationId = "xiguang.orangechat"
         minSdk = 26
         targetSdk = 37
-        versionCode = 167
-        versionName = "2.4.5"
+        versionCode = 168
+        versionName = "2.4.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
