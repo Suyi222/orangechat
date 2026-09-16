@@ -224,7 +224,12 @@
       <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="background music playback" />
     </service>
 
-    <service android:name=".service.KeepAliveService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />
+    <!-- 2.4.6 H2：dataSync → specialUse。dataSync 在 Android 14+ 有 6h/24h 累计配额，
+         配额耗尽时系统强停（ForegroundServiceDidNotStopInTimeException），9.11 就是被这样处决的。
+         改为 specialUse（与本 App 其余 11 个前台服务一致）后躲开配额，保活能力不减反增。 -->
+    <service android:name=".service.KeepAliveService" android:enabled="true" android:exported="false" android:foregroundServiceType="specialUse" android:stopWithTask="false">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="keep-alive for scheduled messages and background tasks" />
+    </service>
 
     <service android:name=".service.WeixinBotService" android:exported="false" android:foregroundServiceType="specialUse">
       <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="weixin bot message polling" />

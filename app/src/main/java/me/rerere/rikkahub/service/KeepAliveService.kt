@@ -118,15 +118,17 @@ class KeepAliveService : Service() {
             .build()
 
         // 启动前台服务
-        // Android 14+ 对 dataSync 类型前台服务有每 24 小时 6 小时的累计配额限制，
-        // 配额耗尽时 startForeground 会抛 ForegroundServiceStartNotAllowedException。
-        // 这里捕获异常并优雅降级，避免崩溃整个 App。
+        // 2.4.6 H2：类型由 dataSync 改为 specialUse。
+        // dataSync 在 Android 14+ 有每 24 小时 6 小时的累计配额，配额耗尽时系统会强停服务
+        // （ForegroundServiceDidNotStopInTimeException，9.11 保活被处决的根因），
+        // specialUse 无此配额，与本 App 其余 11 个前台服务保持一致。
+        // 异常分支保留：任何启动失败都优雅降级，绝不让整个 App 崩掉。
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     NOTIFICATION_ID,
                     notification,
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 )
             } else {
                 startForeground(NOTIFICATION_ID, notification)
@@ -134,7 +136,7 @@ class KeepAliveService : Service() {
         } catch (e: Exception) {
             Log.e(
                 TAG,
-                "startForeground 失败（可能是 dataSync 前台服务时长配额耗尽），停止保活服务避免崩溃",
+                "startForeground 失败（前台服务启动被系统拒绝），停止保活服务避免崩溃",
                 e
             )
             stopSelf()
@@ -145,6 +147,23 @@ class KeepAliveService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * 2.4.6 H2：系统要求前台服务限时停止时的优雅退出路径（Android 15 / API 35+）。
+     *
+     * 历史问题：dataSync 超配额时系统直接处决进程（ForegroundServiceDidNotStopInTimeException），
+     * 连日志都留不下。改成 specialUse 后不再有该配额，但这条回调仍作为兜底保留：
+     * 万一系统仍判定超时，这里主动 stopSelf() 退出，把「进程被杀」降级为「服务正常停止」，
+     * 至少保住 App 进程和其它服务（总结 Worker / 主动消息调度）不被连坐。
+     */
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "onTimeout(startId=$startId)：系统要求前台服务限时停止，主动退出保活服务")
+        try {
+            stopSelf()
+        } catch (e: Exception) {
+            Log.e(TAG, "onTimeout 停止服务失败", e)
+        }
+    }
 
     override fun onDestroy() {
         super.onDestroy()
