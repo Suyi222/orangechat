@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
+import me.rerere.ai.util.SpecialTokenFilter
 import me.rerere.ai.util.json
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -50,10 +51,14 @@ data class UIMessage(
                             val lastPart = acc.lastOrNull()
                             if (lastPart is UIMessagePart.Text) {
                                 // Append to the last Text part
-                                acc.dropLast(1) + lastPart.copy(text = lastPart.text + deltaPart.text)
+                                // 2.4.6 H1：清洗特殊 token。这里对「累积全文」清洗而不是只看当前 delta，
+                                // 跨 chunk 被切开的半截 token（<|begin_ + of_sentence|>）因此也能被清掉。
+                                acc.dropLast(1) + lastPart.copy(
+                                    text = SpecialTokenFilter.sanitize(lastPart.text + deltaPart.text)
+                                )
                             } else {
                                 // Create new Text part
-                                acc + deltaPart
+                                acc + deltaPart.copy(text = SpecialTokenFilter.sanitize(deltaPart.text))
                             }
                         }
                     }
