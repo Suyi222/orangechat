@@ -82,6 +82,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.utils.ProactiveTrace
 import me.rerere.rikkahub.utils.sendNotification
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -457,9 +458,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
         val isFromDeviceEvent = deviceEventContext != null && !isFromWorkflow
-        // 2.4.2 全链路埋点：主动消息链路断点定位用（零行为变化）。过滤：adb logcat -s ProactiveTrace
-        Log.i(
-            "ProactiveTrace",
+        // 2.4.2 全链路埋点 → 2.4.6.2 RD1 文件化：主动消息链路断点定位用。
+        // logcat 过滤 adb logcat -s ProactiveTrace；文件 filesDir/proactive_trace.log，设置页可导出
+        ProactiveTrace.log(
+            this,
             "entry source=${if (isFromWorkflow) "workflow" else if (isFromDeviceEvent) "device_event" else "scheduled_or_gateway"} force=$isForceTrigger"
         )
         if (isForceTrigger) {
@@ -470,7 +472,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             .setSmallIcon(me.rerere.rikkahub.R.drawable.small_icon)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_MIN)
             .build()
-        startForeground(20001, notification)
+        // RD1（2.4.6.2）：FGS 启动成败留痕——凌晨 doze 下后台 FGS 启动限制可能拒绝（晨信案嫌疑②）。
+        // 旧代码 startForeground 抛异常会直接崩进程；改为记录后优雅退出，留下「死在哪段」的证据。
+        try {
+            startForeground(20001, notification)
+            ProactiveTrace.log(this, "fgs: startForeground ok")
+        } catch (e: Exception) {
+            ProactiveTrace.log(this, "fgs: startForeground FAILED ${e.javaClass.simpleName}: ${e.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         CoroutineScope(Dispatchers.IO).launch {
             var conversationId: kotlin.uuid.Uuid? = null
@@ -480,7 +491,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 激进模式设备事件触发、工作流主动唤醒时，不检查主动消息开关（可独立工作）
                 if (!proactiveSetting.enabled && !isFromDeviceEvent && !isFromWorkflow) {
-                    Log.i("ProactiveTrace", "skip: proactive disabled (and not force source)")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "skip: proactive disabled (and not force source)")
                     stopSelf()
                     return@launch
                 }
@@ -505,7 +516,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     }
                     if (skipDueToInterval) {
                         Log.d(TAG, "Duplicate trigger within min interval, skipping")
-                        Log.i("ProactiveTrace", "skip: within min interval")
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "skip: within min interval")
                         ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                         stopSelf()
                         return@launch
@@ -522,14 +533,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     ?: settings.getCurrentAssistant()
                 val assistantUuid = assistant.id
                 val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
-                Log.i(
-                    "ProactiveTrace",
+                ProactiveTrace.log(
+                    this@ProactiveMessageTriggerService,
                     "assistant=${assistant.id} cfgAssistantId=${proactiveSetting.assistantId} model=${model?.modelId ?: "null"}"
                 )
 
                 if (model == null) {
                     Log.e(ProactiveMessageService.TAG, "No model found for proactive message")
-                    Log.i("ProactiveTrace", "skip: model null")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "skip: model null")
                     ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                     stopSelf()
                     return@launch
@@ -558,8 +569,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 如果当前已有生成在跑（正常聊天或另一路主动消息），直接放弃本次触发，不排队等待、不重试。
                 // 理由：等对方生成结束后，上下文（用户可能已在聊别的话题）大概率已过时，硬等没有意义。
                 val myJob = coroutineContext[Job]
-                if (myJob == null || !chatService.getOrCreateSession(conversationId).tryClaimGeneration(myJob)) {
-                    Log.i("ProactiveTrace", "skip: claim failed (already generating), conversationId=$conversationId")
+                val claimSession = chatService.getOrCreateSession(conversationId)
+                if (myJob == null || !claimSession.tryClaimGeneration(myJob)) {
+                    // RD1（2.4.6.2）：claim 失败连占用方一起留痕——晨信案嫌疑④「夜间树影下 Worker 同会话生成」的实锤位
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "skip: claim failed (already generating, occupant=${claimSession.getJob()}), conversationId=$conversationId")
                     Log.d(
                         TAG,
                         "Skip proactive trigger: session $conversationId already generating " +
@@ -570,13 +583,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     stopSelf()
                     return@launch
                 }
+                ProactiveTrace.log(this@ProactiveMessageTriggerService, "claim: ok conversationId=$conversationId")
 
                 // 构建上下文
                 // RB3（2.4.6.2）：维持 MAX_VALUE 兜底语义不变（hotfix 批不动触发行为），但 null 必须留痕——
                 // RB2 回退后 null 应极罕见，这里的日志频率就是 beta.2 要不要改「宁可不发不误发」的证据
                 val lastMsgMs = runCatching { proactiveMessageService.getLastMessageTimeMs() }.getOrDefault(0L)
                 val idleMinutes = if (lastMsgMs > 0) ((System.currentTimeMillis() - lastMsgMs) / 60000L).toInt() else Int.MAX_VALUE
-                Log.i("ProactiveTrace", if (idleMinutes == Int.MAX_VALUE) {
+                ProactiveTrace.log(this@ProactiveMessageTriggerService, if (idleMinutes == Int.MAX_VALUE) {
                     "lastMsgTime: NULL (raw=$lastMsgMs) -> idleMinutes=MAX_VALUE (RB2 fallback also failed?)"
                 } else {
                     "lastMsgTime: lastMs=$lastMsgMs idleMinutes=$idleMinutes"
@@ -668,7 +682,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val providerSetting = model.findProvider(settings.providers)
                 if (providerSetting == null) {
                     Log.e(ProactiveMessageService.TAG, "No provider found for proactive message")
-                    Log.i("ProactiveTrace", "skip: provider null for model=${model.modelId}")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "skip: provider null for model=${model.modelId}")
                     ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
                     stopSelf()
                     return@launch
@@ -706,9 +720,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     if (!hasSchema) Log.w(TAG, "Tool '${t.name}' has NULL parameters schema — may cause API rejection")
                 }
 
-                Log.i(
-                    "ProactiveTrace",
-                    "generate start: conversationId=$conversationId model=${model.modelId} history=${historyMessages.size} tools=${tools.size}"
+                ProactiveTrace.log(
+                    this@ProactiveMessageTriggerService,
+                    "request: generate start conversationId=$conversationId model=${model.modelId} history=${historyMessages.size} tools=${tools.size}"
                 )
                 // 执行生成，支持工具调用
                 val (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
@@ -751,14 +765,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls, shouldJump=$shouldJump")
-                Log.i(
-                    "ProactiveTrace",
+                ProactiveTrace.log(
+                    this@ProactiveMessageTriggerService,
                     "generate done: conversationId=$conversationId replyLen=${replyText.length} pass=${rawText.contains("[PASS]")} hasToolCalls=$hasToolCalls"
                 )
 
                 if (replyText.isBlank() || rawText.contains("[PASS]")) {
                     // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "persist: skipped (PASS/blank reply), ai node removed conversationId=$conversationId")
                     val aiId = aiMessage.id
                     val session = chatService.getOrCreateSession(conversationId)
                     session.saveMutex.withLock {
@@ -848,11 +863,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     "Proactive generation cancelled (likely user started a new message), " +
                         "conversationId=$conversationId"
                 )
-                Log.i("ProactiveTrace", "cancelled: user message interrupted, conversationId=$conversationId")
+                ProactiveTrace.log(this@ProactiveMessageTriggerService, "cancelled: user message interrupted, conversationId=$conversationId")
                 throw e
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
-                Log.i("ProactiveTrace", "error: ${e::class.simpleName}: ${e.message}")
+                ProactiveTrace.log(this@ProactiveMessageTriggerService, "error: ${e::class.simpleName}: ${e.message}")
                 // 如果是 API 返回的 HTTP 错误, 把原始错误体也打出来便于定位
                 val cause = e.cause
                 if (cause != null) {
@@ -1051,6 +1066,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         }
 
         Log.d(TAG, "Saved proactive message to conversation $conversationId")
+        // RD1（2.4.6.2）：⑧落库留痕——「信写好了但没落库」（R4 老病灶）与「根本没生成」从此可分辨
+        ProactiveTrace.log(this@ProactiveMessageTriggerService, "persist: saved conversationId=$conversationId")
         return conversationId
     }
 
@@ -1226,11 +1243,17 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             // 流式调用 AI（替代非流式 generateText，兼容 thinking 模型）
             var streamMessages = messages.toList()
+            // RD1（2.4.6.2）：首包留痕——「请求发出」与「模型响应」的分界，凌晨网关/限流死在这两行之间
+            var firstPacketLogged = false
             providerImpl.streamText(
                 providerSetting = providerSetting,
                 messages = messages,
                 params = params
             ).collect { chunk ->
+                if (!firstPacketLogged) {
+                    firstPacketLogged = true
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "first packet: step=$step conversationId=$conversationId")
+                }
                 streamMessages = streamMessages.handleMessageChunk(chunk = chunk, model = model)
 
                 // 实时更新 session 状态，让打开的聊天界面能看到消息生成
@@ -1297,6 +1320,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val toolDef = tools.find { it.name == toolCall.toolName }
                 if (toolDef == null) {
                     Log.w(TAG, "Tool ${toolCall.toolName} not found")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "tool: ${toolCall.toolName} NOT FOUND (插件未加载?) step=$step")
                     executedTools.add(toolCall.copy(
                         output = listOf(UIMessagePart.Text("""{"error":"Tool not found"}"""))
                     ))
@@ -1310,6 +1334,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 if (toolDef.needsApproval && !allowAll) {
                     // 后台模式下，需要审批且总开关未开启的工具自动拒绝
                     Log.w(TAG, "Tool ${toolCall.toolName} needs approval, auto-denying in proactive mode")
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "tool: ${toolCall.toolName} denied (needs approval, allowToolsInProactive=false) step=$step")
                     executedTools.add(toolCall.copy(
                         output = listOf(UIMessagePart.Text("""{"error":"Tool execution denied: requires user approval in proactive mode"}""")),
                         approvalState = ToolApprovalState.Denied("Proactive mode: requires approval")
@@ -1325,10 +1350,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                             JsonObject(emptyMap())
                         }
                         Log.d(TAG, "Executing tool ${toolDef.name} with args: $args")
+                        // RD1（2.4.6.2）：工具调用与结果各一行——晨信案嫌疑⑦「模型没调邮局插件/调了失败」的实锤位
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "tool call: ${toolDef.name} argsLen=${toolCall.input.length} step=$step")
                         val result = toolDef.execute(args)
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "tool result: ${toolDef.name} ok parts=${result.size} step=$step")
                         executedTools.add(toolCall.copy(output = result))
                     } catch (e: Exception) {
                         Log.e(TAG, "Tool execution failed: ${toolCall.toolName}, args=${toolCall.input}", e)
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "tool result: ${toolCall.toolName} FAILED ${e.javaClass.simpleName}: ${e.message} step=$step")
                         executedTools.add(toolCall.copy(
                             output = listOf(UIMessagePart.Text("""{"error":"${e.message}"}"""))
                         ))

@@ -17,6 +17,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.service.ProactiveMessageTriggerService
+import me.rerere.rikkahub.utils.ProactiveTrace
 
 /**
  * 工作流主动唤醒工具 — 让工作流能唤醒 AI 查岗。
@@ -74,12 +75,17 @@ fun createTriggerProactiveMessageTool(context: Context): Tool = Tool(
         }
         try {
             context.startForegroundService(intent)
-            android.util.Log.i("ProactiveTrace", "tool trigger_proactive_message invoked, workflowId=$workflowId, messageLen=${message.length}")
+            ProactiveTrace.log(context, "tool trigger_proactive_message invoked, workflowId=$workflowId, messageLen=${message.length}")
             listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", true)
-                put("message", "Proactive message triggered: $message")
+                // RD3（2.4.6.2）：本工具是 fire-and-forget——startForegroundService 调用成功即返回，
+                // workflow_runs 的 SUCCESS 只覆盖 8 段链路第 1 段。措辞写明「异步执行」，
+                // 不再让裸 SUCCESS 误导成「信已写完」（树邮局晨信案 9-18 定案）。
+                put("message", "主动消息服务已启动（异步执行，最终结果见后台任务日志 proactive_trace）: $message")
             }.toString()))
         } catch (e: Exception) {
+            // RD1（2.4.6.2）：FGS 启动失败留痕——凌晨后台 FGS 启动被拒（晨信案嫌疑②）的实锤位
+            ProactiveTrace.log(context, "tool trigger_proactive_message FGS start FAILED: ${e.javaClass.simpleName}: ${e.message}, workflowId=$workflowId")
             listOf(UIMessagePart.Text(buildJsonObject {
                 put("success", false)
                 put("error", e.message ?: "unknown")

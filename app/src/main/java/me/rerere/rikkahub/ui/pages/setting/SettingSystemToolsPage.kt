@@ -361,34 +361,43 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                 }
-                // 2.4.6 H5：总结失败可见 —— 日志导出入口
+                // 2.4.6 H5 + 2.4.6.2 RD2：后台任务日志统一导出入口——
+                // tree_shadow_summary.log（FAIL/SKIP）+ proactive_trace.log（主动消息/工作流 8 段链路）一起分享
                 item(
                     onClick = {
-                        val logFile = chatService.summaryLogFile()
-                        if (!logFile.exists() || logFile.length() == 0L) {
-                            // RC3（2.4.6.2）：旧文案误导——静默跳过（Bug C）时系统并不「正常」
-                            Toast.makeText(context, "还没有失败记录；若时间线也没有新条目，总结可能被静默跳过（新版本会记录跳过原因）", Toast.LENGTH_SHORT).show()
+                        val files = listOf(
+                            chatService.summaryLogFile(),
+                            me.rerere.rikkahub.utils.ProactiveTrace.logFile(context),
+                        ).filter { it.exists() && it.length() > 0L }
+                        if (files.isEmpty()) {
+                            // RC3（2.4.6.2）：旧文案「说明自动总结一直正常」在静默跳过状态下恰恰是错的
+                            Toast.makeText(context, "还没有失败记录，也没有后台任务触发记录；若时间线没有新条目，总结可能被静默跳过（新版本会记录跳过原因）", Toast.LENGTH_SHORT).show()
                         } else {
                             try {
-                                val uri = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    logFile
-                                )
-                                val intent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_STREAM, uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                val uris = ArrayList(files.map {
+                                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
+                                })
+                                val intent = if (uris.size == 1) {
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_STREAM, uris[0])
+                                    }
+                                } else {
+                                    Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                                        type = "text/plain"
+                                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                                    }
                                 }
-                                context.startActivity(Intent.createChooser(intent, "导出自动总结日志"))
+                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                context.startActivity(Intent.createChooser(intent, "导出后台任务日志"))
                             } catch (e: Exception) {
                                 Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     leadingContent = { Icon(imageVector = HugeIcons.Share05, contentDescription = null) },
-                    headlineContent = { Text("导出自动总结日志") },
-                    supportingContent = { Text("自动总结失败时会把原因写进本地日志（连续失败 ≥3 次还会在树影下时间线提示）。点这里把日志导出给树，方便定位断档原因") },
+                    headlineContent = { Text("导出后台任务日志") },
+                    supportingContent = { Text("两份日志一起导出：①自动总结（失败 FAIL / 静默跳过 SKIP 都记录原因）②主动消息与工作流全链路（proactive_trace：FGS启动→取时→claim→请求→首包→工具→落库→完成，每段一行）。晨信工作流跑一夜，导出即可定位死在哪段") },
                 )
                 item(
                     headlineContent = { Text("深度对话额外落年轮") },
