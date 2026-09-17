@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -48,6 +48,7 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
+import me.rerere.ai.util.SpecialTokenFilter
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
@@ -244,6 +245,11 @@ class ChatCompletionsAPI(
         // just for debugging response body
         // println(client.newCall(request).await().body?.string())
 
+        // 2.4.6.2 token 全层·源头跨 delta 尾巴暂扣（每条流独立一份）：未闭合的半截 token
+        // 不下发，专治逃逸假设②——半截 token 跨 part 边界（Tool/Reasoning 打断 Text 拼接）时，
+        // 下游「按 part 累积清洗」拼不回完整 token 白白放过。
+        val tokenBuffer = StreamTokenBuffer()
+
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -324,7 +330,7 @@ class ChatCompletionsAPI(
                         add(
                             UIMessageChoice(
                                 index = 0,
-                                delta = parseMessage(message),
+                                delta = tokenBuffer.filter(parseMessage(message)),
                                 message = null,
                                 finishReason = finishReason,
                             )
@@ -823,8 +829,11 @@ class ChatCompletionsAPI(
         )
 
         // 也许支持其他模态的输出content?
-        val content = jsonObject["content"]?.jsonPrimitiveOrNull?.contentOrNull ?: ""
-        val reasoning = jsonObject["reasoning_content"]?.jsonPrimitiveOrNull?.contentOrNull
+        // 2.4.6.2 token 全层·源头清洗：解析 delta/message 处直接剔除控制 token——最靠近源头，
+        // 一次覆盖流式、非流式、SSE-merge（generateText）全部路径；
+        // 跨 delta 的半截 token 由 streamText 的 StreamTokenBuffer 尾巴暂扣兜住。
+        val content = SpecialTokenFilter.sanitize(jsonObject["content"]?.jsonPrimitiveOrNull?.contentOrNull ?: "")
+        val reasoning = (jsonObject["reasoning_content"]?.jsonPrimitiveOrNull?.contentOrNull
             ?: jsonObject["reasoning"]?.jsonPrimitiveOrNull?.contentOrNull
             ?: jsonObject["content"]?.takeIf { it is JsonArray }?.let { arr ->
                 // Mistral接口
@@ -832,7 +841,7 @@ class ChatCompletionsAPI(
                 arr.jsonArrayOrNull?.getOrNull(0)?.jsonObject?.get("thinking")?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull?.get(
                     "text"
                 )?.jsonPrimitiveOrNull?.contentOrNull
-            }
+            })?.let { SpecialTokenFilter.sanitize(it) }
         val toolCalls = jsonObject["tool_calls"] as? JsonArray ?: JsonArray(emptyList())
         val images = jsonObject["images"] as? JsonArray ?: JsonArray(emptyList())
 
@@ -953,5 +962,44 @@ class ChatCompletionsAPI(
         // body 末尾可能没有空行收尾
         flush()
         return events
+    }
+}
+
+/**
+ * 2.4.6.2 token 全层：源头流的跨 delta 尾巴暂扣缓冲（每条流一份实例，只在 OkHttp
+ * EventSource 单线程回调里访问，无并发问题）。
+ *
+ * Text 与 Reasoning 各自暂扣未闭合的 `<|xxx` 尾巴：完整 token 当场洗掉（双保险，下游
+ * appendChunk 还会按 part 累积再洗一遍），半截尾巴押着等下一个同类型 delta 拼接；
+ * 流结束仍押着的尾巴直接作废——半截 token 本就不该进正文（与 sanitizeFinal 语义一致），
+ * 且不发它就永远不会进 part，天然治好「跨 part 边界拼不回」的逃逸假设②。
+ */
+private class StreamTokenBuffer {
+    private var textTail = ""
+    private var reasoningTail = ""
+
+    fun filter(message: UIMessage): UIMessage {
+        if (message.parts.isEmpty()) return message
+        var changed = false
+        val newParts = message.parts.map { part ->
+            when (part) {
+                is UIMessagePart.Text -> {
+                    val combined = SpecialTokenFilter.sanitize(textTail + part.text)
+                    val tailLen = SpecialTokenFilter.openTailLength(combined)
+                    textTail = if (tailLen > 0) combined.takeLast(tailLen) else ""
+                    val emit = if (tailLen > 0) combined.dropLast(tailLen) else combined
+                    if (emit != part.text) { changed = true; part.copy(text = emit) } else part
+                }
+                is UIMessagePart.Reasoning -> {
+                    val combined = SpecialTokenFilter.sanitize(reasoningTail + part.reasoning)
+                    val tailLen = SpecialTokenFilter.openTailLength(combined)
+                    reasoningTail = if (tailLen > 0) combined.takeLast(tailLen) else ""
+                    val emit = if (tailLen > 0) combined.dropLast(tailLen) else combined
+                    if (emit != part.reasoning) { changed = true; part.copy(reasoning = emit) } else part
+                }
+                else -> part
+            }
+        }
+        return if (changed) message.copy(parts = newParts) else message
     }
 }

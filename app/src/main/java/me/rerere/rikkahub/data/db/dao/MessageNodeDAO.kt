@@ -81,6 +81,13 @@ interface MessageNodeDAO {
     )
     suspend fun getLastMessageCreatedAt(conversationId: String): String?
 
+    /**
+     * 2.4.6.2 token 全层·存量清污：只查疑似含控制 token 的脏行 id（不拉 blob 进堆）。
+     * LIKE 在 SQL 层扫字符串，健康库近零命中；`<` 与 `|` 都不是 LIKE 通配符，无需转义。
+     */
+    @Query("SELECT id FROM message_node WHERE messages LIKE '%<|%'")
+    suspend fun getNodeIdsContainingSpecialTokens(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(nodes: List<MessageNodeEntity>)
 

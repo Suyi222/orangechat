@@ -64,10 +64,15 @@ private fun UIMessagePart.hasSpecialToken(): Boolean = when (this) {
     else -> false
 }
 
-/** 清洗一段文本类 part（正文 / 思考）；其它 part 原样返回。 */
+/**
+ * 清洗一段文本类 part（正文 / 思考）；其它 part 原样返回。
+ * 2.4.6.2 升级为 sanitizeFinal：落库文本是终态，「未闭合尾巴等下一包」永远等不到下一包，
+ * 不剥就是永久残留进库（还会随历史发回给模型诱导复吐）。流式中途保存被剥掉的尾巴
+ * 会在下一个 delta 到来时随内存态全量重存补回，最终一致。
+ */
 private fun UIMessagePart.sanitizeSpecialToken(): UIMessagePart = when (this) {
-    is UIMessagePart.Text -> copy(text = SpecialTokenFilter.sanitize(text))
-    is UIMessagePart.Reasoning -> copy(reasoning = SpecialTokenFilter.sanitize(reasoning))
+    is UIMessagePart.Text -> copy(text = SpecialTokenFilter.sanitizeFinal(text))
+    is UIMessagePart.Reasoning -> copy(reasoning = SpecialTokenFilter.sanitizeFinal(reasoning))
     else -> this
 }
 
@@ -150,6 +155,38 @@ class ConversationRepository(
             Log.w(TAG, "getLastMessageTimeMs: update_at fallback failed, conversationId=$conversationId", e)
             null
         }
+    }
+
+    /**
+     * 2.4.6.2 token 全层·存量清污（一次性任务，RikkaHubApp 启动时带 SP 开关调用）：
+     * 历史泄露进库的控制 token 会随每次请求把脏历史发回模型——诱导模型跟着吐（污染滚
+     * 雪球、指令遵循退化，晨信疑不调工具的同案嫌疑）且污染 prefix 缓存。只扫 LIKE '%<|%'
+     * 命中的行、按落库兜底同规则（sanitizeFinal）清洗回写；正常库近零开销。
+     * FTS 索引不在此重建：脏会话下一次保存时 indexConversation 自动刷新。
+     * @return 实际重写行数
+     */
+    suspend fun cleanupLegacySpecialTokens(): Int {
+        val dirtyIds = messageNodeDAO.getNodeIdsContainingSpecialTokens()
+        if (dirtyIds.isEmpty()) return 0
+        var cleaned = 0
+        for (id in dirtyIds) {
+            runCatching {
+                val node = messageNodeDAO.getNodeById(id) ?: return@runCatching
+                val messages = JsonInstant.decodeFromString<List<UIMessage>>(node.messages)
+                if (messages.none { msg -> msg.parts.any { it.hasSpecialToken() } }) return@runCatching
+                val sanitized = messages.map { msg ->
+                    if (msg.parts.none { it.hasSpecialToken() }) msg
+                    else msg.copy(parts = msg.parts.map { it.sanitizeSpecialToken() })
+                }
+                val newJson = JsonInstant.encodeToString(sanitized)
+                if (newJson != node.messages) {
+                    messageNodeDAO.update(node.copy(messages = newJson))
+                    cleaned++
+                }
+            }.onFailure { Log.w(TAG, "cleanupLegacySpecialTokens: row skipped, id=$id", it) }
+        }
+        Log.i(TAG, "cleanupLegacySpecialTokens: scanned=${dirtyIds.size}, cleaned=$cleaned")
+        return cleaned
     }
 
     fun getConversationsOfAssistant(assistantId: Uuid): Flow<List<Conversation>> {

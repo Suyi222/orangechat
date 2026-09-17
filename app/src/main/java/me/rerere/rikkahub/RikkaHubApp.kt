@@ -140,6 +140,9 @@ class RikkaHubApp : Application() {
         // sync upload files to DB
         syncManagedFiles()
 
+        // 2.4.6.2 token 全层·存量清污：一次性清扫历史泄露进库的控制 token（断「脏历史→模型模仿复吐」循环）
+        cleanupLegacySpecialTokensOnce()
+
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
 
@@ -207,6 +210,25 @@ class RikkaHubApp : Application() {
                 get<FilesManager>().syncFolder()
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
+            }
+        }
+    }
+
+    /**
+     * 2.4.6.2 token 全层·存量清污（一次性）：扫 message_node 中含 "<|" 的脏行，按落库兜底
+     * 同规则清洗回写。成功才落 SP 标记；失败下次启动重试。IO 线程后台跑，不阻塞启动。
+     */
+    private fun cleanupLegacySpecialTokensOnce() {
+        val prefs = getSharedPreferences("rikkahub.preferences", MODE_PRIVATE)
+        if (prefs.getBoolean("special_token_cleanup_done", false)) return
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                val cleaned = get<me.rerere.rikkahub.data.repository.ConversationRepository>()
+                    .cleanupLegacySpecialTokens()
+                prefs.edit().putBoolean("special_token_cleanup_done", true).apply()
+                Log.i(TAG, "Legacy special token cleanup done, cleanedRows=$cleaned")
+            }.onFailure {
+                Log.e(TAG, "Legacy special token cleanup failed (will retry next launch)", it)
             }
         }
     }

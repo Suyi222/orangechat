@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -345,7 +345,8 @@ private fun MessagePartsBlock(
     }
  
     // Render parts in original order (group thinking/tool as chain-of-thought)
-    val groupedParts = remember(parts) { parts.groupMessageParts() }
+    // 2.4.6.2 token 全层·渲染兜底：上屏前统一终态清洗（不含 "<|" 时零拷贝短路）
+    val groupedParts = remember(parts) { parts.sanitizedForRender().groupMessageParts() }
     groupedParts.fastForEach { block ->
         when (block) {
             is MessagePartBlock.ThinkingBlock -> {
