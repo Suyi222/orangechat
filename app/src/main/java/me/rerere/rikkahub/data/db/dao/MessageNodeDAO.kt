@@ -64,13 +64,20 @@ interface MessageNodeDAO {
      * 直接在 SQL 层用 json_extract 取值，不把 messages blob 读进 JVM 堆——
      * 旧实现走 getConversationById 全量加载整会话（5500 条窗口下是几十 MB 分配）。
      * 语义与旧逻辑一致：node_index 最大的那个 node 的 messages 数组最后一项。
+     *
+     * 2.4.6.2 RB1：改两段式 MAX(node_index) 子查询。旧写法 ORDER BY node_index DESC LIMIT 1
+     * 走 TEMP B-TREE 排序，json_extract 在排序前对该会话**每一个节点行**求值（SQLite 3.49.1
+     * EXPLAIN QUERY PLAN 实证）：任一行 messages JSON 损坏 → 整个查询抛 malformed JSON →
+     * catch 后静默 null（一行坏数据毒全局），且巨窗口每次白解析全部 blob。
+     * 改后 json_extract 只解析最后一行；坏行不再毒全局、巨窗口不再白干；
+     * 最后一行本身损坏/解析失败的回退由 repository 层 update_at 兜底（RB2）。
      */
     @Query(
         "SELECT CASE WHEN json_array_length(messages) > 0 " +
             "THEN json_extract(messages, '\$[' || (json_array_length(messages) - 1) || '].createdAt') " +
             "ELSE NULL END " +
             "FROM message_node WHERE conversation_id = :conversationId " +
-            "ORDER BY node_index DESC LIMIT 1"
+            "AND node_index = (SELECT MAX(node_index) FROM message_node WHERE conversation_id = :conversationId)"
     )
     suspend fun getLastMessageCreatedAt(conversationId: String): String?
 

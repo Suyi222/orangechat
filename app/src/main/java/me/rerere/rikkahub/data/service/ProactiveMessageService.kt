@@ -572,7 +572,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 构建上下文
-                val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
+                // RB3（2.4.6.2）：维持 MAX_VALUE 兜底语义不变（hotfix 批不动触发行为），但 null 必须留痕——
+                // RB2 回退后 null 应极罕见，这里的日志频率就是 beta.2 要不要改「宁可不发不误发」的证据
+                val lastMsgMs = runCatching { proactiveMessageService.getLastMessageTimeMs() }.getOrDefault(0L)
+                val idleMinutes = if (lastMsgMs > 0) ((System.currentTimeMillis() - lastMsgMs) / 60000L).toInt() else Int.MAX_VALUE
+                Log.i("ProactiveTrace", if (idleMinutes == Int.MAX_VALUE) {
+                    "lastMsgTime: NULL (raw=$lastMsgMs) -> idleMinutes=MAX_VALUE (RB2 fallback also failed?)"
+                } else {
+                    "lastMsgTime: lastMs=$lastMsgMs idleMinutes=$idleMinutes"
+                })
 
                 // 如果有设备事件上下文（激进模式/工作流唤醒），使用它替代常规上下文；否则使用常规上下文
                 val contextStr = if ((isFromDeviceEvent || isFromWorkflow) && deviceEventContext != null) {

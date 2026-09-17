@@ -115,17 +115,39 @@ class ConversationRepository(
     /**
      * 2.4.6 H4：只读会话最后一条消息的时间（epoch ms），失败返回 null。
      * SQL 层 json_extract 直接取字段，不把 messages blob 读进堆，也不解析 JSON。
+     *
+     * 2.4.6.2 RB2：尾查询抛异常 / 结果 null / 时间不可解析 → 回退 conversationentity.update_at + Log.w。
+     * null 的放大链（既有语义）：工作流 LastChatAgo 条件 fail-open（不该触发的放行）、
+     * 主动消息 idleMinutes → Int.MAX_VALUE（该触发的恒超闲置阈值）——双向不稳定。
+     * update_at 语义近似（会话最后更新时间），远好于 null。
      */
     suspend fun getLastMessageTimeMs(conversationId: Uuid): Long? {
-        return try {
-            val raw = messageNodeDAO.getLastMessageCreatedAt(conversationId.toString()) ?: return null
-            runCatching {
+        val idStr = conversationId.toString()
+        val raw = try {
+            messageNodeDAO.getLastMessageCreatedAt(idStr)
+        } catch (e: Exception) {
+            Log.w(TAG, "getLastMessageTimeMs: tail query failed (corrupt node?), fallback to update_at, conversationId=$conversationId", e)
+            null
+        }
+        if (raw != null) {
+            val parsed = runCatching {
                 LocalDateTime.parse(raw)
                     .toInstant(TimeZone.currentSystemDefault())
                     .toEpochMilliseconds()
             }.getOrNull()
+            if (parsed != null) return parsed
+            Log.w(TAG, "getLastMessageTimeMs: unparsable createdAt, fallback to update_at, conversationId=$conversationId, raw=${raw.take(64)}")
+        }
+        return try {
+            val updateAt = conversationDAO.getUpdateAtById(idStr)
+            if (updateAt != null && updateAt > 0L) {
+                Log.w(TAG, "getLastMessageTimeMs: node tail null/invalid, using conversation update_at=$updateAt, conversationId=$conversationId")
+                updateAt
+            } else {
+                null
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "getLastMessageTimeMs failed, conversationId=$conversationId", e)
+            Log.w(TAG, "getLastMessageTimeMs: update_at fallback failed, conversationId=$conversationId", e)
             null
         }
     }

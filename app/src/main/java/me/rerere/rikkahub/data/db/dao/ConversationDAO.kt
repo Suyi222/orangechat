@@ -70,6 +70,10 @@ interface ConversationDAO {
     @Query("SELECT EXISTS(SELECT 1 FROM conversationentity WHERE id = :id)")
     suspend fun existsById(id: String): Boolean
 
+    /** 2.4.6.2 RB2：按 id 只取 update_at——H4 尾查询失败时的回退源，不加载整行会话。 */
+    @Query("SELECT update_at FROM conversationentity WHERE id = :id")
+    suspend fun getUpdateAtById(id: String): Long?
+
     @Insert
     suspend fun insert(conversation: ConversationEntity)
 
