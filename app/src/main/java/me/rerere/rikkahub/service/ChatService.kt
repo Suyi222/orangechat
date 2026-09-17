@@ -202,6 +202,9 @@ class ChatService(
         const val KEY_MSG_COUNT = "msg_count"
         const val KEY_MSG_COUNT_DATE = "msg_count_date"
         // B3.8 章节边界：上次总结时会话消息条数快照（跨天不重置），总结窗口 = 此边界之后的新消息
+        // RC1（2.4.6.2 Bug C）：书签改按会话存。此前是全局单键——5500 条大窗口一次成功总结
+        // 就把书签顶到 5500+，所有正常窗口永远 total <= baseCount 被静默跳过 = 树影下全窗口
+        // 无声罢工（9-18 实锤定案）。旧全局键作废不读、无需迁移；按会话冷启动 0 安全（窗口回退最近 12 条）。
         const val KEY_SEGMENT_BASE_COUNT = "segment_base_count"
         // 2.4.6 H5：自动总结失败退避 + 可见性（失败不再每 15 分钟连环全量重试）
         const val KEY_SUMMARY_FAIL_COUNT = "summary_fail_count"
@@ -215,6 +218,13 @@ class ChatService(
 
     private fun treeShadowPrefs() =
         context.getSharedPreferences(TREE_SHADOW_PREFS, Context.MODE_PRIVATE)
+
+    /** RC1（2.4.6.2）：总结书签按会话独立存——修「全局书签被大窗口顶高、锁死所有窗口」（Bug C）。 */
+    private fun segmentBaseKey(conversationId: Uuid) = "${KEY_SEGMENT_BASE_COUNT}_$conversationId"
+
+    /** RC4（2.4.6.2）：章节轮转计数同样按会话存——此前全局单键，跨窗口聊天互相污染计数。 */
+    private fun msgCountKey(conversationId: Uuid) = "${KEY_MSG_COUNT}_$conversationId"
+    private fun msgCountDateKey(conversationId: Uuid) = "${KEY_MSG_COUNT_DATE}_$conversationId"
 
     // ---- 2.4.6 H5：自动总结的失败退避与可见性 ----
 
@@ -1352,13 +1362,16 @@ class ChatService(
             Instant.ofEpochMilli(lastAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
         }.getOrNull() ?: return false
 
-        val baseCount = prefs.getInt(KEY_SEGMENT_BASE_COUNT, 0)
+        val baseCount = prefs.getInt(segmentBaseKey(conversationId), 0)
         segmentSummaryRunning = true
         appScope.launch {
             try {
                 // baseCount 以来有新消息才值得总结（后台检查可能在同一段落上反复触发，幂等跳过）
                 val total = conversationRepo.getConversationById(conversationId)?.currentMessages?.size ?: 0
                 if (total <= baseCount) {
+                    // RC2（2.4.6.2）：静默跳过也写总结日志——Bug C 诊断期间这条路径零记录，
+                    // 导出日志还弹「一直正常」误导排查。有这行 SKIP，下次一眼定案。
+                    appendSummaryLog("SKIP: no new messages (total=$total, base=$baseCount, conv=$conversationId)")
                     Log.i(TAG, "idle summary skip: no new messages since base (total=$total, base=$baseCount, conversationId=$conversationId)")
                     return@launch
                 }
@@ -1395,23 +1408,24 @@ class ChatService(
         prefs.edit().putLong(KEY_LAST_USER_MSG_AT, now).apply()
 
         // 触发② 章节轮转（默认关，独立开关；按日分组，跨天重置）
+        // RC4（2.4.6.2）：计数按会话存——此前全局单键，跨窗口聊天互相污染计数、章节边界漂移
         var chapterHit = false
         if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0 && !isSummaryBackingOff()) {
             val today = TreeShadowService.today()
-            val countDate = prefs.getString(KEY_MSG_COUNT_DATE, null)
-            val count = if (countDate == today) prefs.getInt(KEY_MSG_COUNT, 0) else 0
+            val countDate = prefs.getString(msgCountDateKey(conversationId), null)
+            val count = if (countDate == today) prefs.getInt(msgCountKey(conversationId), 0) else 0
             val newCount = count + 1
-            prefs.edit().putInt(KEY_MSG_COUNT, newCount).putString(KEY_MSG_COUNT_DATE, today).apply()
+            prefs.edit().putInt(msgCountKey(conversationId), newCount).putString(msgCountDateKey(conversationId), today).apply()
             if (newCount >= cfg.autoRecordChapterN) {
                 chapterHit = true
-                prefs.edit().remove(KEY_MSG_COUNT).apply()
+                prefs.edit().remove(msgCountKey(conversationId)).apply()
             }
         }
 
         if (!chapterHit) return
         val finalDate = TreeShadowService.today()
-        // B3.8 读取章节边界：总结窗口取上次总结以来的新消息（完整一章）
-        val baseCount = prefs.getInt(KEY_SEGMENT_BASE_COUNT, 0)
+        // B3.8 读取章节边界：总结窗口取上次总结以来的新消息（完整一章）；RC1 起按会话取
+        val baseCount = prefs.getInt(segmentBaseKey(conversationId), 0)
         segmentSummaryRunning = true
         appScope.launch {
             try {
@@ -1483,8 +1497,8 @@ class ChatService(
             return
         }
         treeShadowService?.appendTimeline(dateGroup, summary)
-        // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章
-        treeShadowPrefs().edit().putInt(KEY_SEGMENT_BASE_COUNT, all.size).apply()
+        // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章（RC1 起按会话写）
+        treeShadowPrefs().edit().putInt(segmentBaseKey(conversationId), all.size).apply()
         // 2.4.6 H5：成功即清空失败计数与退避
         recordSummarySuccess()
         Log.i(TAG, "TreeShadow segment summary appended [$dateGroup]: $summary")

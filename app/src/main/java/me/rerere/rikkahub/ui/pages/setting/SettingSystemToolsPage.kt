@@ -366,7 +366,8 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                     onClick = {
                         val logFile = chatService.summaryLogFile()
                         if (!logFile.exists() || logFile.length() == 0L) {
-                            Toast.makeText(context, "还没有失败日志，说明自动总结一直正常", Toast.LENGTH_SHORT).show()
+                            // RC3（2.4.6.2）：旧文案误导——静默跳过（Bug C）时系统并不「正常」
+                            Toast.makeText(context, "还没有失败记录；若时间线也没有新条目，总结可能被静默跳过（新版本会记录跳过原因）", Toast.LENGTH_SHORT).show()
                         } else {
                             try {
                                 val uri = FileProvider.getUriForFile(
