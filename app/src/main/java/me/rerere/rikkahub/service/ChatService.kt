@@ -211,6 +211,11 @@ class ChatService(
         const val KEY_SUMMARY_NEXT_RETRY_AT = "summary_next_retry_at"
         const val KEY_SUMMARY_LAST_ERROR = "summary_last_error"
         const val KEY_SUMMARY_FAIL_NOTIFIED = "summary_fail_notified"
+        // 2.4.6.2 RA：退避设计缺陷修复——内容拒收分开阶梯（缩窗重试）+ 熔断显式暂停 + 提示按日重发
+        const val KEY_SUMMARY_SHRINK_LEVEL = "summary_shrink_level"
+        const val KEY_SUMMARY_PAUSED_AT = "summary_paused_at"
+        const val SUMMARY_CIRCUIT_BREAK_THRESHOLD = 5
+        const val SUMMARY_PAUSE_PROBE_MS = 24 * 60 * 60 * 1000L
         const val SUMMARY_LOG_FILE = "tree_shadow_summary.log"
         const val SUMMARY_LOG_MAX_BYTES = 256 * 1024L
         const val SUMMARY_FAIL_NOTIFY_THRESHOLD = 3
@@ -234,9 +239,19 @@ class ChatService(
     /** 总结失败日志文件（可在树影下设置里导出）。 */
     fun summaryLogFile(): java.io.File = java.io.File(context.filesDir, SUMMARY_LOG_FILE)
 
-    /** 是否还在失败退避窗口内（在窗口内不再发起总结，避免失败后连环全量加载）。 */
+    /**
+     * 是否还在失败退避窗口内（在窗口内不再发起总结，避免失败后连环全量加载）。
+     * RA2（2.4.6.2）：熔断暂停期间同样返回 true；暂停满 24h 自动清除暂停标记放行一次探测
+     * （探测再失败会重新熔断并当天再提示——显式停摆 + 每日可见，胜过无声罢工或无限退避）。
+     */
     private fun isSummaryBackingOff(): Boolean {
-        val nextRetryAt = treeShadowPrefs().getLong(KEY_SUMMARY_NEXT_RETRY_AT, 0L)
+        val prefs = treeShadowPrefs()
+        val pausedAt = prefs.getLong(KEY_SUMMARY_PAUSED_AT, 0L)
+        if (pausedAt > 0L) {
+            if (System.currentTimeMillis() - pausedAt < SUMMARY_PAUSE_PROBE_MS) return true
+            prefs.edit().remove(KEY_SUMMARY_PAUSED_AT).apply()
+        }
+        val nextRetryAt = prefs.getLong(KEY_SUMMARY_NEXT_RETRY_AT, 0L)
         return nextRetryAt > System.currentTimeMillis()
     }
 
@@ -247,37 +262,65 @@ class ChatService(
      * 旧行为：失败后 baseCount 不推进，每 15 分钟原样重试一次，每次都全量加载会话，
      * 形成「失败 → 恶性重试 → 内存压力更大 → 更容易失败」的循环。
      */
-    private suspend fun recordSummaryFailure(reason: String) {
+    private suspend fun recordSummaryFailure(reason: String, contentRejection: Boolean = false) {
         val prefs = treeShadowPrefs()
         val failCount = prefs.getInt(KEY_SUMMARY_FAIL_COUNT, 0) + 1
-        val backoffIndex = (failCount - 1).coerceIn(0, summaryRetryBackoffMinutes.lastIndex)
-        val backoffMinutes = summaryRetryBackoffMinutes[backoffIndex]
-        prefs.edit()
+        val editor = prefs.edit()
             .putInt(KEY_SUMMARY_FAIL_COUNT, failCount)
-            .putLong(KEY_SUMMARY_NEXT_RETRY_AT, System.currentTimeMillis() + backoffMinutes * 60_000L)
             .putString(KEY_SUMMARY_LAST_ERROR, reason)
-            .apply()
-        appendSummaryLog("FAIL #$failCount: $reason（${backoffMinutes} 分钟后才允许重试）")
-        Log.w(TAG, "TreeShadow summary failed #$failCount: $reason, next retry in ${backoffMinutes}min")
-        if (failCount >= SUMMARY_FAIL_NOTIFY_THRESHOLD && !prefs.getBoolean(KEY_SUMMARY_FAIL_NOTIFIED, false)) {
-            prefs.edit().putBoolean(KEY_SUMMARY_FAIL_NOTIFIED, true).apply()
-            runCatching {
-                treeShadowService?.appendTimeline(
-                    TreeShadowService.today(),
-                    "⚠️ 自动总结连续失败 $failCount 次（$reason）。已自动放慢重试、不会反复打扰；" +
-                        "修好后会自己恢复，日志可在「树影下」设置里导出。"
-                )
-            }.onFailure { Log.w(TAG, "append summary failure notice failed", it) }
+        var logLine: String
+        if (contentRejection) {
+            // RA1（2.4.6.2）：内容拒收（总结为空/超长）是确定性失败——同窗口重试大概率复现，
+            // 与基础设施失败共用退避阶梯会一路爬到 240 分钟封顶 =「一天只试一次」的全天静默。
+            // 改轻量策略：不设退避窗口，总结窗逐级缩小（60→30→12 条）等下轮自然触发重试。
+            val level = (prefs.getInt(KEY_SUMMARY_SHRINK_LEVEL, 0) + 1).coerceIn(0, 2)
+            editor.putInt(KEY_SUMMARY_SHRINK_LEVEL, level)
+            val nextWindow = intArrayOf(60, 30, 12)[level]
+            logLine = "REJECT #$failCount: $reason（内容拒收不进退避阶梯，下次缩窗到 $nextWindow 条重试）"
+        } else {
+            val backoffIndex = (failCount - 1).coerceIn(0, summaryRetryBackoffMinutes.lastIndex)
+            val backoffMinutes = summaryRetryBackoffMinutes[backoffIndex]
+            editor.putLong(KEY_SUMMARY_NEXT_RETRY_AT, System.currentTimeMillis() + backoffMinutes * 60_000L)
+            logLine = "FAIL #$failCount: $reason（${backoffMinutes} 分钟后才允许重试）"
+        }
+        // RA2（2.4.6.2）：熔断替代无限退避——连续失败满 5 次显式暂停 24h（然后自动探测一次），
+        // 暂停当天必有一条时间线提示（走下面 RA3 的按日通知）。
+        val circuitBroken = failCount >= SUMMARY_CIRCUIT_BREAK_THRESHOLD
+        if (circuitBroken) {
+            editor.putLong(KEY_SUMMARY_PAUSED_AT, System.currentTimeMillis())
+            logLine += "；熔断：自动总结已暂停，24 小时后自动探测"
+        }
+        editor.apply()
+        appendSummaryLog(logLine)
+        Log.w(TAG, "TreeShadow summary failed #$failCount: $reason (contentRejection=$contentRejection, circuitBroken=$circuitBroken)")
+        // RA3（2.4.6.2）：提示持久化——通知键从 boolean 改「上次提示日期」。旧实现只在出事当天
+        // 提示一次，第二天看当天时间线一条没有 =「无声罢工」；现在持续失败每天重发一条进当天时间线。
+        // 注：旧版本存的是 boolean，getString 会抛 ClassCastException，runCatching 兜住当作「没提示过」。
+        val today = TreeShadowService.today()
+        val lastNotified = runCatching { prefs.getString(KEY_SUMMARY_FAIL_NOTIFIED, null) }.getOrNull()
+        if (failCount >= SUMMARY_FAIL_NOTIFY_THRESHOLD && lastNotified != today) {
+            prefs.edit().putString(KEY_SUMMARY_FAIL_NOTIFIED, today).apply()
+            val notice = if (circuitBroken) {
+                "⏸️ 自动总结已暂停：$reason（连续失败 $failCount 次，24 小时后会自动探测一次）。" +
+                    "日志可在「设置 → 系统工具 → 导出后台任务日志」导出。"
+            } else {
+                "⚠️ 自动总结连续失败 $failCount 次（$reason）。已自动放慢重试、不会反复打扰；" +
+                    "修好后会自己恢复，日志可在「树影下」设置里导出。"
+            }
+            runCatching { treeShadowService?.appendTimeline(today, notice) }
+                .onFailure { Log.w(TAG, "append summary failure notice failed", it) }
         }
     }
 
-    /** 总结成功：清空失败计数与退避，让系统提示可以再次触发。 */
+    /** 总结成功：清空失败计数、退避、熔断与缩窗级别，让系统提示可以再次触发。 */
     private fun recordSummarySuccess() {
         treeShadowPrefs().edit()
             .remove(KEY_SUMMARY_FAIL_COUNT)
             .remove(KEY_SUMMARY_NEXT_RETRY_AT)
             .remove(KEY_SUMMARY_LAST_ERROR)
             .remove(KEY_SUMMARY_FAIL_NOTIFIED)
+            .remove(KEY_SUMMARY_SHRINK_LEVEL)
+            .remove(KEY_SUMMARY_PAUSED_AT)
             .apply()
     }
 
@@ -1410,7 +1453,8 @@ class ChatService(
         // 触发② 章节轮转（默认关，独立开关；按日分组，跨天重置）
         // RC4（2.4.6.2）：计数按会话存——此前全局单键，跨窗口聊天互相污染计数、章节边界漂移
         var chapterHit = false
-        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0 && !isSummaryBackingOff()) {
+        // RA4（2.4.6.2）：计数不再被退避拦截——旧实现退避期间连 KEY_MSG_COUNT 都停了，章节边界漂移
+        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
             val today = TreeShadowService.today()
             val countDate = prefs.getString(msgCountDateKey(conversationId), null)
             val count = if (countDate == today) prefs.getInt(msgCountKey(conversationId), 0) else 0
@@ -1423,6 +1467,12 @@ class ChatService(
         }
 
         if (!chapterHit) return
+        // RA4（2.4.6.2）：计数照走，但退避/熔断暂停期间不发起总结——写 SKIP 日志留痕；
+        // 消息仍在书签之后，恢复后的下一次触发会整段补总结，不会丢。
+        if (isSummaryBackingOff()) {
+            appendSummaryLog("SKIP: chapter rotation hit but summary in backoff/paused (conv=$conversationId)")
+            return
+        }
         val finalDate = TreeShadowService.today()
         // B3.8 读取章节边界：总结窗口取上次总结以来的新消息（完整一章）；RC1 起按会话取
         val baseCount = prefs.getInt(segmentBaseKey(conversationId), 0)
@@ -1471,7 +1521,9 @@ class ChatService(
         // B3.8 完整一章：窗口 = 上次总结边界以来的全部消息（上限 60 条防上下文爆掉）。
         // 边界缺失/已失效（消息被清理）时回退最近 12 条，避免空窗口。
         val all = conversation.currentMessages
-        val window = if (baseCount > 0 && baseCount < all.size) all.drop(baseCount).take(60) else emptyList()
+        // RA1（2.4.6.2）：内容拒收后缩窗重试（60→30→12 条），总结成功即归零
+        val windowSize = intArrayOf(60, 30, 12)[treeShadowPrefs().getInt(KEY_SUMMARY_SHRINK_LEVEL, 0).coerceIn(0, 2)]
+        val window = if (baseCount > 0 && baseCount < all.size) all.drop(baseCount).take(windowSize) else emptyList()
         val recent = window.ifEmpty { all.takeLast(12) }
         if (recent.isEmpty()) {
             Log.w("TreeShadowSummary", "summarizeSegment skip: empty window (conversationId=$conversationId, total=${all.size}, base=$baseCount)")
@@ -1493,7 +1545,8 @@ class ChatService(
         val summary = result.choices[0].message?.toText()?.trim().orEmpty()
         if (summary.isBlank() || summary.length > 200) {
             Log.w("TreeShadowSummary", "summarizeSegment skip: summary blank or too long (len=${summary.length}, conversationId=$conversationId)")
-            recordSummaryFailure("总结内容为空或过长（${summary.length} 字）")
+            // RA1：内容拒收走轻量策略（不进基础设施退避阶梯），下轮缩窗重试
+            recordSummaryFailure("总结内容为空或过长（${summary.length} 字）", contentRejection = true)
             return
         }
         treeShadowService?.appendTimeline(dateGroup, summary)
