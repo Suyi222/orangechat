@@ -171,14 +171,17 @@ class ChatService(
     private val folderRepository: FolderRepository,
 ) {
     // 树影下状态服务（Koin 懒取，避免构造器改动过大）
-    private val treeShadowService: TreeShadowService? by lazy {
-        try {
+    // ⚠️ 9-21 修复：不要再 by lazy 永久缓存 null —— 取服务只要失败一次就被缓存一整个进程生命周期，
+    // 而写入点是空安全调用（treeShadowService?.appendTimeline(...)）→ 总结照跑、书签照推、
+    // 还记一笔 success，但一条都没写进库：页面全空、日志全绿（9-21 定案，藏了三天）。
+    // 改成 getter：这次失败返回 null（调用方记失败），下次调用再试一次；Koin 正常时应恒非空。
+    private val treeShadowService: TreeShadowService?
+        get() = try {
             org.koin.core.context.GlobalContext.get().get<TreeShadowService>()
         } catch (e: Exception) {
             Log.w(TAG, "TreeShadowService not available", e)
             null
         }
-    }
 
     // tree_heart 服务（C3 自动落账 / C4 自动见证）
     private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService? by lazy {
@@ -595,20 +598,27 @@ class ChatService(
                     android.util.Log.w("ChatService", "Failed to reset proactive timer", e)
                 }
 
-                // 树影下：跨天兜底归档 + 自动段落记录（决策 9/13，按当前助手本地工具开关判断）
-                if (treeShadowAssistant.localTools.contains(me.rerere.rikkahub.data.ai.tools.LocalToolOption.TreeShadow)) {
-                    runCatching {
-                        val prefs = treeShadowPrefs()
-                        // 保险三：上次活跃日期不是今天 → 把旧日归档
-                        prefs.getString(KEY_LAST_ACTIVE_DATE, null)?.let { lastDate ->
-                            treeShadowService?.maybeAutoArchive(lastDate)
-                        }
-                        prefs.edit().putString(KEY_LAST_ACTIVE_DATE, TreeShadowService.today()).apply()
-                        // 段落判定：闲置超过阈值 → 上一段结束 → 轻量总结写入时间线
-                        maybeSegmentSummary(conversationId)
-                    }.onFailure { e ->
-                        Log.w(TAG, "TreeShadow auto record failed, conversationId=$conversationId", e)
+                // 树影下：跨天兜底归档 + 自动段落记录（决策 9/13）
+                // ⚠️ 9-21 修复：这三件事原先整块被「助手本地工具开关」闸住，是错的。开关一旦为 false：
+                //   ① 段末时钟（KEY_LAST_USER_MSG_AT）永久冻结 → 闲置总结的段末日期永远是同一天
+                //      → 条目全写进那个旧日期桶；
+                //   ② 跨天兜底归档同时停摆 → 那个桶既不在「今天」也不在「往日」＝永久隐身。
+                //   （9-21 实锤：往日最新只到 09-18，09-19 起零条目，而书签一路照推、零 FAIL。）
+                // 现在：记账（时钟 + 归档）永远执行；只有「章节轮转」这个功能仍听助手开关。
+                val treeShadowChapterEnabled = treeShadowAssistant.localTools.contains(
+                    me.rerere.rikkahub.data.ai.tools.LocalToolOption.TreeShadow
+                )
+                runCatching {
+                    val prefs = treeShadowPrefs()
+                    // 保险三：上次活跃日期不是今天 → 把旧日归档
+                    prefs.getString(KEY_LAST_ACTIVE_DATE, null)?.let { lastDate ->
+                        treeShadowService?.maybeAutoArchive(lastDate)
                     }
+                    prefs.edit().putString(KEY_LAST_ACTIVE_DATE, TreeShadowService.today()).apply()
+                    // 段落判定：段末检查 + 时钟推进（时钟推进必须在检查之后，见 maybeSegmentSummary）
+                    maybeSegmentSummary(conversationId, allowChapterRotation = treeShadowChapterEnabled)
+                }.onFailure { e ->
+                    Log.w(TAG, "TreeShadow auto record failed, conversationId=$conversationId", e)
                 }
 
                 // 读取最新状态 -> 追加用户消息 -> 落库，整体加锁。
@@ -1436,7 +1446,7 @@ class ChatService(
      * ② 章节轮转：累计消息数达到 N → 总结离开的这一章（独立开关）
      * 记录者=agent 时系统不自动总结（AI 自行用 state_write 记录）。
      */
-    private fun maybeSegmentSummary(conversationId: Uuid) {
+    private fun maybeSegmentSummary(conversationId: Uuid, allowChapterRotation: Boolean = true) {
         val settings = runCatching { settingsStore.settingsFlow.value }.getOrNull() ?: return
         val cfg = settings.systemToolsSetting
         if (!cfg.autoRecordEnabled) return
@@ -1454,7 +1464,8 @@ class ChatService(
         // RC4（2.4.6.2）：计数按会话存——此前全局单键，跨窗口聊天互相污染计数、章节边界漂移
         var chapterHit = false
         // RA4（2.4.6.2）：计数不再被退避拦截——旧实现退避期间连 KEY_MSG_COUNT 都停了，章节边界漂移
-        if (!idleHit && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
+        // 9-21：章节轮转仍听助手「树影下」开关（allowChapterRotation）；触发①（段末）与时钟推进不受开关影响
+        if (!idleHit && allowChapterRotation && cfg.autoRecordChapterEnabled && cfg.autoRecordChapterN > 0) {
             val today = TreeShadowService.today()
             val countDate = prefs.getString(msgCountDateKey(conversationId), null)
             val count = if (countDate == today) prefs.getInt(msgCountKey(conversationId), 0) else 0
@@ -1549,11 +1560,30 @@ class ChatService(
             recordSummaryFailure("总结内容为空或过长（${summary.length} 字）", contentRejection = true)
             return
         }
-        treeShadowService?.appendTimeline(dateGroup, summary)
+        // 9-21 修复：服务取不到 = 这次总结根本没写出来，必须记失败、边界不动。
+        // 旧实现是 treeShadowService?.appendTimeline(...) 静默跳过 + 无条件推边界 + 记 success，
+        // 于是「写失败」在日志里长得跟「成功」一模一样（9-21 实锤，藏了三天）。
+        val shadow = treeShadowService ?: run {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: TreeShadowService unavailable (conversationId=$conversationId)")
+            recordSummaryFailure("树影下服务不可用")
+            return
+        }
+        shadow.appendTimeline(dateGroup, summary)
+        // 落盘核验：只有真写进去才推边界（getActiveTimeline 只查 archived=0，新插入的行必在其中）
+        val landed = runCatching {
+            shadow.getActiveTimeline(dateGroup).any { it.content == summary }
+        }.getOrDefault(false)
+        if (!landed) {
+            Log.w("TreeShadowSummary", "summarizeSegment skip: entry not persisted (date=$dateGroup, conversationId=$conversationId)")
+            recordSummaryFailure("总结条目未落盘（写入失败）")
+            return
+        }
         // B3.8 更新章节边界：本段已消费，之后的新消息才进入下一章（RC1 起按会话写）
         treeShadowPrefs().edit().putInt(segmentBaseKey(conversationId), all.size).apply()
         // 2.4.6 H5：成功即清空失败计数与退避
         recordSummarySuccess()
+        // L4（9-21）：成功也留痕——此前成功零日志行，「总结到底跑没跑」只能靠 base 间接推断
+        appendSummaryLog("OK: summary saved (total=${all.size}, chars=${summary.length}, date=$dateGroup, conv=$conversationId)")
         Log.i(TAG, "TreeShadow segment summary appended [$dateGroup]: $summary")
 
         // C3.1 自动落账：勾选「深度对话额外落年轮」时，把这一章同时写进 tree_heart 年轮

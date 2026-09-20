@@ -7,12 +7,14 @@
 package me.rerere.rikkahub
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
+import coil3.memory.MemoryCache
 import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.network.cachecontrol.CacheControlCacheStrategy
@@ -76,6 +78,23 @@ class RikkaHubApp : Application() {
             private set
     }
 
+    /**
+     * 9-21 急救：内存告警时主动把可再生的缓存还回去。
+     * 隙光有 12 个前台服务 + 保活，进程几乎永不重启 → 堆只涨不落，只有手动清后台才清零
+     * （9-20 OOM 实锤：target footprint = growth limit = 536870912）。「保活不倒」必须配上这一半：
+     * 系统一喊内存紧张就吐掉图片内存缓存。只清可再生缓存，不碰任何业务数据。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level < ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        try {
+            SingletonImageLoader.get(this).memoryCache?.clear()
+            Log.i(TAG, "onTrimMemory(level=" + level + "): Coil memory cache cleared")
+        } catch (e: Throwable) {
+            Log.w(TAG, "onTrimMemory cleanup failed", e)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         INSTANCE = this
@@ -95,6 +114,13 @@ class RikkaHubApp : Application() {
         SingletonImageLoader.setSafe { context ->
             ImageLoader.Builder(context)
                 .crossfade(true)
+                // 9-21 急救：Coil 默认内存缓存 = 可用堆的 25%（largeHeap 下可达 ~128MB），
+                // 而隙光保活几乎永不重启 → 这层缓存只涨不落。压到 15%，配合下面的 onTrimMemory。
+                .memoryCache(
+                    MemoryCache.Builder()
+                        .maxSizePercent(context, 0.15)
+                        .build()
+                )
                 .components {
                     add(OkHttpNetworkFetcherFactory(
                         callFactory = { get<OkHttpClient>() },

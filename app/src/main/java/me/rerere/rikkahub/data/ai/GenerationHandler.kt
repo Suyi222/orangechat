@@ -91,14 +91,15 @@ class GenerationHandler(
     private val memoryBankService: MemoryBankService,
 ) {
     // 树影下状态服务（Koin 懒取，避免构造器改动过大）
-    private val treeShadowService: TreeShadowService? by lazy {
-        try {
+    // ⚠️ 9-21 同步修复：不再 by lazy 永久缓存 null（与 ChatService 同案：一次失败＝整个进程
+    // 生命周期静默失效，Null-safe 调用点全部无声跳过）。改成 getter，失败下次重试。
+    private val treeShadowService: TreeShadowService?
+        get() = try {
             org.koin.core.context.GlobalContext.get().get<TreeShadowService>()
         } catch (e: Exception) {
             Log.w(TAG, "TreeShadowService not available", e)
             null
         }
-    }
 
     // tree_heart 服务（C2 树的当下自我：读本地 self.md + 最近年轮）
     private val treeHeartService: me.rerere.rikkahub.data.service.TreeHeartService? by lazy {

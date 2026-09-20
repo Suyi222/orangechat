@@ -416,6 +416,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     companion object {
         private const val TAG = "ProactiveMessageTrigger"
         private const val MAX_TOOL_STEPS = 5 // 主动消息最大工具调用步数
+        // 9-21 急救 · 热点 A：流式期间落库节流间隔（内存态仍每 chunk 更新）
+        private const val STREAM_PERSIST_INTERVAL_MS = 1500L
         // 外部触发（网关轮询）时跳过内部 minInterval 去重
         const val EXTRA_FORCE_TRIGGER = "force_trigger"
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
@@ -1145,9 +1147,20 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
      * 注意：这里必须走 saveMutex 保护，因为流式更新与 ChatService.sendMessage/addProactiveMessage
      * 可能并发修改同一会话，read-modify-write 不加锁会导致后写入者覆盖前者。
      */
+    /**
+     * 流式落库节流（9-21 急救 · 热点 A）：
+     * 旧实现每收到一个流式 chunk 就 updateOrAppendAiMessage → saveConversation
+     * → ConversationRepository.updateConversation，会把【整个会话的全部 node】重新 JSON 编码
+     * 并回读比较（1163 节点 × 每个 chunk 一次 = 单条回复几十万次编码）。
+     * 内存态必须每 chunk 更新（界面要实时），但落库没必要：节流到 ≥1.5s 一次；
+     * 流结束 / 工具步结束的调用点保持 forcePersist=true，保证最终一定全量落库。
+     */
+    private var lastStreamPersistAtMs = 0L
+
     private suspend fun updateOrAppendAiMessage(
         conversationId: Uuid,
-        aiMessage: UIMessage
+        aiMessage: UIMessage,
+        forcePersist: Boolean = true
     ) {
         val session = chatService.getOrCreateSession(conversationId)
         session.saveMutex.withLock {
@@ -1173,7 +1186,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 conv.copy(messageNodes = conv.messageNodes + aiMessage.toMessageNode())
             }
             chatService.updateConversation(conversationId, updated)
-            chatService.saveConversation(conversationId, updated)
+            // 9-21 急救 · 热点 A：内存态永远更新，DB 写入最多 ~1.5s 一次。
+            // 旧实现每个 chunk 都整份保存 = 整会话重新 JSON 编码 + 全量回读比较。
+            val nowMs = System.currentTimeMillis()
+            if (forcePersist || nowMs - lastStreamPersistAtMs >= STREAM_PERSIST_INTERVAL_MS) {
+                lastStreamPersistAtMs = nowMs
+                chatService.saveConversation(conversationId, updated)
+            }
         }
     }
 
@@ -1260,7 +1279,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val currentAiMessage = streamMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
                 if (currentAiMessage != null) {
                     // 用 id 匹配就地更新（保留 node id，避免思考链闪烁 / 覆盖上一条 assistant）
-                    updateOrAppendAiMessage(conversationId, currentAiMessage)
+                    // 9-21：流式途中不强制落库（节流），由下方 forcePersist=true 的收尾调用保证最终落库
+                updateOrAppendAiMessage(conversationId, currentAiMessage, forcePersist = false)
                 }
             }
 
