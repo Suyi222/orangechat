@@ -623,13 +623,13 @@ class GenerationHandler(
             }
         )
         if (stream) {
-            aiLoggingManager.addLog(
-                AILogging.Generation(
-                    params = params,
-                    messages = messages,
-                    providerSetting = provider,
-                    stream = true
-                )
+            // 2.4.6.4 第一刀：只交瘦身摘要进日志（完整 messages 不再被日志持有）；
+            // 需要原始请求体时走开发者页「请求体落盘」开关按需导出到文件。
+            aiLoggingManager.addGeneration(
+                params = params,
+                messages = messages,
+                providerSetting = provider,
+                stream = true,
             )
             providerImpl.streamText(
                 providerSetting = provider,
@@ -649,13 +649,11 @@ class GenerationHandler(
                 onUpdateMessages(messages)
             }
         } else {
-            aiLoggingManager.addLog(
-                AILogging.Generation(
-                    params = params,
-                    messages = messages,
-                    providerSetting = provider,
-                    stream = false
-                )
+            aiLoggingManager.addGeneration(
+                params = params,
+                messages = messages,
+                providerSetting = provider,
+                stream = false,
             )
             val chunk = providerImpl.generateText(
                 providerSetting = provider,

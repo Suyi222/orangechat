@@ -125,7 +125,8 @@ val appModule = module {
     }
 
     single {
-        AILoggingManager()
+        // 2.4.6.4：需要 Context 供「请求体按需落盘」写 filesDir/ai_request_dump/
+        AILoggingManager(get())
     }
 
     single {
