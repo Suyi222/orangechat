@@ -17,10 +17,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -37,6 +40,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.handleMessageChunk
@@ -90,6 +94,14 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+
+/**
+ * 2.4.7 E3（L10·静默看门狗）：流式生成超过 stall 阈值仍无任何内容增量时抛出。
+ * 9-20 15:05 案：网关黑洞只吐 keep-alive 空帧，43min 零内容、claim 一直被占，
+ * 后续晨信/设备事件全部 claim failed 而死。看门狗把静默流提前掐掉、释放 claim，
+ * 恢复交给补偿重试（E2 同机制）。
+ */
+class ProactiveStallException(message: String) : RuntimeException(message)
 
 class ProactiveMessageService : KoinComponent {
     private val settingsStore: SettingsStore by inject()
@@ -419,6 +431,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     companion object {
         private const val TAG = "ProactiveMessageTrigger"
         private const val MAX_TOOL_STEPS = 5 // 主动消息最大工具调用步数
+        // 2.4.7 E3（L10·静默看门狗）：流式「零内容增量」持续上限。okhttp readTimeout(10min)
+        // 会被网关 keep-alive 空帧骗过（DataSourceModule），9-20 实锤 43min 静默占 claim。
+        // 90s 对思考模型有余量（思考期 reasoning 包也算内容增量，见 hasContentDelta）。
+        private const val PROACTIVE_STALL_TIMEOUT_MS = 90_000L
         // 9-21 急救 · 热点 A：流式期间落库节流间隔（内存态仍每 chunk 更新）
         private const val STREAM_PERSIST_INTERVAL_MS = 1500L
         // 外部触发（网关轮询）时跳过内部 minInterval 去重
@@ -985,6 +1001,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
                 ProactiveTrace.log(this@ProactiveMessageTriggerService, "cancelled: user message interrupted, conversationId=$conversationId")
                 throw e
+            } catch (e: ProactiveStallException) {
+                // 2.4.7 E3：静默看门狗触发（FAIL: stall trace 已由 generateWithTools 打出）。
+                // claim 由 finally 释放；补偿重试走 E2-A 同机制——网关黑洞多为暂时性，
+                // 15-30min 后大概率恢复；设备事件源照旧除外（上下文过时）。
+                Log.e(ProactiveMessageService.TAG, "Proactive generation stalled: ${e.message}")
+                scheduleCompensationIfEligible("stall")
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
                 ProactiveTrace.log(this@ProactiveMessageTriggerService, "error: ${e::class.simpleName}: ${e.message}")
@@ -1389,24 +1411,59 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             var streamMessages = messages.toList()
             // RD1（2.4.6.2）：首包留痕——「请求发出」与「模型响应」的分界，凌晨网关/限流死在这两行之间
             var firstPacketLogged = false
-            providerImpl.streamText(
+            // 2.4.7 E3（L10·静默看门狗）：collect 改 produceIn 通道 + deadline 循环。
+            // 判据是「内容增量」：只有真正携带增量（文本/思考/工具/finishReason）的包才顺延
+            // deadline；网关 keep-alive 空帧不顺延（否则 deadline 被空帧续命，看门狗形同虚设）。
+            // 累计 PROACTIVE_STALL_TIMEOUT_MS 无内容 → 抛 ProactiveStallException（trace: FAIL: stall），
+            // 上游异常从 closed channel 原样重抛（网络类判定/取消传播语义与旧 collect 一致）。
+            val chunkChannel = providerImpl.streamText(
                 providerSetting = providerSetting,
                 messages = messages,
                 params = params
-            ).collect { chunk ->
-                if (!firstPacketLogged) {
-                    firstPacketLogged = true
-                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "first packet: step=$step conversationId=$conversationId")
-                }
-                streamMessages = streamMessages.handleMessageChunk(chunk = chunk, model = model)
+            ).produceIn(CoroutineScope(currentCoroutineContext()))
+            try {
+                var deadline = System.currentTimeMillis() + PROACTIVE_STALL_TIMEOUT_MS
+                while (true) {
+                    val remaining = deadline - System.currentTimeMillis()
+                    val chunkResult = if (remaining > 0) {
+                        withTimeoutOrNull(remaining) { chunkChannel.receiveCatching() }
+                    } else {
+                        null
+                    }
+                    if (chunkResult == null) {
+                        val stallState = if (firstPacketLogged) "mid-stream" else "pre-first-packet"
+                        ProactiveTrace.log(
+                            this@ProactiveMessageTriggerService,
+                            "FAIL: stall ($stallState zero content for ${PROACTIVE_STALL_TIMEOUT_MS / 1000}s) step=$step conversationId=$conversationId"
+                        )
+                        throw ProactiveStallException("stream stalled ($stallState, ${PROACTIVE_STALL_TIMEOUT_MS}ms without content) step=$step")
+                    }
+                    if (chunkResult.isFailure) {
+                        // 上游异常原样重抛；正常完结（channel closed）跳出
+                        chunkResult.exceptionOrNull()?.let { throw it }
+                        break
+                    }
+                    val chunk = chunkResult.getOrThrow()
+                    if (!firstPacketLogged) {
+                        firstPacketLogged = true
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "first packet: step=$step conversationId=$conversationId")
+                    }
+                    if (hasContentDelta(chunk)) {
+                        deadline = System.currentTimeMillis() + PROACTIVE_STALL_TIMEOUT_MS
+                    }
+                    streamMessages = streamMessages.handleMessageChunk(chunk = chunk, model = model)
 
-                // 实时更新 session 状态，让打开的聊天界面能看到消息生成
-                val currentAiMessage = streamMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                if (currentAiMessage != null) {
-                    // 用 id 匹配就地更新（保留 node id，避免思考链闪烁 / 覆盖上一条 assistant）
-                    // 9-21：流式途中不强制落库（节流），由下方 forcePersist=true 的收尾调用保证最终落库
-                updateOrAppendAiMessage(conversationId, currentAiMessage, forcePersist = false)
+                    // 实时更新 session 状态，让打开的聊天界面能看到消息生成
+                    val currentAiMessage = streamMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
+                    if (currentAiMessage != null) {
+                        // 用 id 匹配就地更新（保留 node id，避免思考链闪烁 / 覆盖上一条 assistant）
+                        // 9-21：流式途中不强制落库（节流），由下方 forcePersist=true 的收尾调用保证最终落库
+                        updateOrAppendAiMessage(conversationId, currentAiMessage, forcePersist = false)
+                    }
                 }
+            } finally {
+                // stall/异常/正常完结都掐掉上游流（okhttp 调用随之取消，连接归还）
+                chunkChannel.cancel()
             }
 
             // 流式结束，更新 messages
@@ -1526,6 +1583,29 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
         return Triple(messages, hasToolCalls, hasJumpFlag)
     }
+
+    /**
+     * 2.4.7 E3：chunk 是否携带「真实内容增量」（文本/思考/工具部件/finish 标记）。
+     * 网关 keep-alive 空帧（空 delta、仅 role 帧、finishReason 为 unknown/null）不算——
+     * 那正是看门狗要识破的空帧；否则 deadline 被空帧无限续命，看门狗形同虚设。
+     */
+    private fun hasContentDelta(chunk: MessageChunk): Boolean {
+        for (choice in chunk.choices) {
+            val fr = choice.finishReason
+            if (!fr.isNullOrEmpty() && fr != "unknown" && fr != "null") return true
+            if (partsHaveContent(choice.delta?.parts) || partsHaveContent(choice.message?.parts)) return true
+        }
+        return false
+    }
+
+    private fun partsHaveContent(parts: List<UIMessagePart>?): Boolean = parts?.any { part ->
+        when (part) {
+            is UIMessagePart.Text -> part.text.isNotEmpty()
+            is UIMessagePart.Reasoning -> part.reasoning.isNotEmpty()
+            is UIMessagePart.Tool -> true
+            else -> false
+        }
+    } ?: false
 
     override fun onBind(intent: Intent?): android.os.IBinder? = null
 }
