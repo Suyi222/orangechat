@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToStream
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import me.rerere.ai.provider.CustomBody
@@ -272,6 +273,7 @@ class AILoggingManager(private val context: Context) {
      * 类型/名称/baseUrl，apiKey、privateKey 等一律不落盘。写失败只记日志，
      * 绝不反噬生成链。
      */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private fun dumpFullRequest(
         params: TextGenerationParams,
         messages: List<UIMessage>,
@@ -317,7 +319,17 @@ class AILoggingManager(private val context: Context) {
                 }
                 put("messages", JsonInstant.encodeToJsonElement(ListSerializer(UIMessage.serializer()), messages))
             }
-            file.writeText(JsonInstantPretty.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), payload))
+            // 2.4.7 D4（OOM 第二刀·落盘流式化）：旧实现先把整份取证 payload 物化成 pretty String
+            // （大会话 ~16MB 级 char[]）再经 writeText 做一次 UTF-8 字节拷贝——堆贴顶的机器上
+            // 「开落盘开关取证」这个动作本身就可能引爆 OOM（9-27 档「待补 req_*.json」一直没取到）。
+            // 改流式 encodeToStream：直接序列化进文件流，堆上只留小缓冲；产物仍是合法 pretty JSON。
+            file.outputStream().use { out ->
+                JsonInstantPretty.encodeToStream(
+                    kotlinx.serialization.json.JsonObject.serializer(),
+                    payload,
+                    out
+                )
+            }
             Log.i(TAG, "request dumped: ${file.name} (${fmtBytes(file.length())})")
         }.onFailure { Log.w(TAG, "dump request failed", it) }
     }
