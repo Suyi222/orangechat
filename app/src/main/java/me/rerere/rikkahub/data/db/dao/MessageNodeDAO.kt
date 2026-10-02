@@ -85,7 +85,15 @@ interface MessageNodeDAO {
      * 2.4.6.2 token 全层·存量清污：只查疑似含控制 token 的脏行 id（不拉 blob 进堆）。
      * LIKE 在 SQL 层扫字符串，健康库近零命中；`<` 与 `|` 都不是 LIKE 通配符，无需转义。
      */
-    @Query("SELECT id FROM message_node WHERE messages LIKE '%<|%'")
+    // 2.4.7 E1（L1-T2 清污 v2）：扫描面加宽到全角变体——9-18 实锤全角竖线｜(U+FF5C)/全角尖括号＜(U+FF1C)
+    // 混搭形态穿透半角 LIKE；L1-ext 跨流后半（text/reasoning part 以竖线开头）按 JSON 键前缀精确锚定。
+    // 半角脏行是原条件的子集，v1 命中不丢；清洗端配套 StorageTokenSanitizer（ConversationRepository）。
+    @Query(
+        "SELECT id FROM message_node WHERE messages LIKE '%<|%' " +
+            "OR messages LIKE '%<｜%' OR messages LIKE '%＜|%' OR messages LIKE '%＜｜%' " +
+            "OR messages LIKE '%\"text\":\"|%' OR messages LIKE '%\"text\":\"｜%' " +
+            "OR messages LIKE '%\"reasoning\":\"|%' OR messages LIKE '%\"reasoning\":\"｜%'"
+    )
     suspend fun getNodeIdsContainingSpecialTokens(): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

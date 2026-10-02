@@ -63,6 +63,13 @@ import org.koin.core.context.startKoin
 
 private const val TAG = "RikkaHubApp"
 
+/**
+ * 2.4.7 E1（L1-T2 清污 v2）：存量清污 schema 版本。
+ * 2 = 全角加宽扫描 + 加宽清洗（StorageTokenSanitizer，见 ConversationRepository）；
+ * 旧 SP boolean 标记 true 视为 v1 已完成 → 升级后自动重扫一次，清掉库内全角脏行（断模仿源，L6 抽查一并闭环）。
+ */
+private const val SPECIAL_TOKEN_CLEANUP_SCHEMA = 2
+
 const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
@@ -246,13 +253,21 @@ class RikkaHubApp : Application() {
      */
     private fun cleanupLegacySpecialTokensOnce() {
         val prefs = getSharedPreferences("rikkahub.preferences", MODE_PRIVATE)
-        if (prefs.getBoolean("special_token_cleanup_done", false)) return
+        // 2.4.7 E1：标记版本化（防重入）。v1 的 boolean 标记折算成 schema=1，低于当前版本就重扫一次。
+        val doneSchema = prefs.getInt(
+            "special_token_cleanup_schema",
+            if (prefs.getBoolean("special_token_cleanup_done", false)) 1 else 0
+        )
+        if (doneSchema >= SPECIAL_TOKEN_CLEANUP_SCHEMA) return
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
                 val cleaned = get<me.rerere.rikkahub.data.repository.ConversationRepository>()
                     .cleanupLegacySpecialTokens()
-                prefs.edit().putBoolean("special_token_cleanup_done", true).apply()
-                Log.i(TAG, "Legacy special token cleanup done, cleanedRows=$cleaned")
+                prefs.edit()
+                    .putInt("special_token_cleanup_schema", SPECIAL_TOKEN_CLEANUP_SCHEMA)
+                    .putBoolean("special_token_cleanup_done", true)
+                    .apply()
+                Log.i(TAG, "Legacy special token cleanup v$SPECIAL_TOKEN_CLEANUP_SCHEMA done, cleanedRows=$cleaned")
             }.onFailure {
                 Log.e(TAG, "Legacy special token cleanup failed (will retry next launch)", it)
             }

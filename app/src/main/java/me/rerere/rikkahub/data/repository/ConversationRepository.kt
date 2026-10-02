@@ -24,7 +24,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.ai.util.SpecialTokenFilter
+import me.rerere.ai.util.StorageTokenSanitizer
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
@@ -57,10 +57,13 @@ private fun List<MessageNode>.sanitizeSpecialTokens(): List<MessageNode> {
     }
 }
 
-/** 这一段文本类 part（正文 / 思考）里是否疑似有模型控制 token。 */
+/**
+ * 这一段文本类 part（正文 / 思考）里是否疑似有模型控制 token。
+ * 2.4.7 E1：快检加宽到全角变体（StorageTokenSanitizer，纯储存层；解析层 SpecialTokenFilter 不动，铁律）。
+ */
 private fun UIMessagePart.hasSpecialToken(): Boolean = when (this) {
-    is UIMessagePart.Text -> SpecialTokenFilter.maybeContainsToken(text)
-    is UIMessagePart.Reasoning -> SpecialTokenFilter.maybeContainsToken(reasoning)
+    is UIMessagePart.Text -> StorageTokenSanitizer.maybeContainsWide(text)
+    is UIMessagePart.Reasoning -> StorageTokenSanitizer.maybeContainsWide(reasoning)
     else -> false
 }
 
@@ -71,8 +74,8 @@ private fun UIMessagePart.hasSpecialToken(): Boolean = when (this) {
  * 会在下一个 delta 到来时随内存态全量重存补回，最终一致。
  */
 private fun UIMessagePart.sanitizeSpecialToken(): UIMessagePart = when (this) {
-    is UIMessagePart.Text -> copy(text = SpecialTokenFilter.sanitizeFinal(text))
-    is UIMessagePart.Reasoning -> copy(reasoning = SpecialTokenFilter.sanitizeFinal(reasoning))
+    is UIMessagePart.Text -> copy(text = StorageTokenSanitizer.sanitizeFinalWide(text))
+    is UIMessagePart.Reasoning -> copy(reasoning = StorageTokenSanitizer.sanitizeFinalWide(reasoning))
     else -> this
 }
 
@@ -160,8 +163,12 @@ class ConversationRepository(
     /**
      * 2.4.6.2 token 全层·存量清污（一次性任务，RikkaHubApp 启动时带 SP 开关调用）：
      * 历史泄露进库的控制 token 会随每次请求把脏历史发回模型——诱导模型跟着吐（污染滚
-     * 雪球、指令遵循退化，晨信疑不调工具的同案嫌疑）且污染 prefix 缓存。只扫 LIKE '%<|%'
-     * 命中的行、按落库兜底同规则（sanitizeFinal）清洗回写；正常库近零开销。
+     * 雪球、指令遵循退化，晨信疑不调工具的同案嫌疑）且污染 prefix 缓存。
+     *
+     * 2.4.7 E1（L1-T2 清污 v2）：扫描 SQL 加宽到全角变体（MessageNodeDAO 同款 LIKE 组），
+     * 清洗规则换 StorageTokenSanitizer.sanitizeFinalWide（半角行为与 sanitizeFinal 逐字一致，
+     * 单测对拍自证；另剥全角混搭与 L1-ext 开头残段）。SP 标记版本化（schema=2）升级后自动
+     * 重扫一次，清掉库内全角脏行（断模仿源）；L6 抽查随本任务一并闭环。
      * FTS 索引不在此重建：脏会话下一次保存时 indexConversation 自动刷新。
      * @return 实际重写行数
      */
@@ -185,7 +192,7 @@ class ConversationRepository(
                 }
             }.onFailure { Log.w(TAG, "cleanupLegacySpecialTokens: row skipped, id=$id", it) }
         }
-        Log.i(TAG, "cleanupLegacySpecialTokens: scanned=${dirtyIds.size}, cleaned=$cleaned")
+        Log.i(TAG, "cleanupLegacySpecialTokens v2: scanned=${dirtyIds.size}, cleaned=$cleaned")
         return cleaned
     }
 
