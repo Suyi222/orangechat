@@ -376,6 +376,9 @@ class ProactiveMessageReceiver : BroadcastReceiver() {
             ProactiveMessageService.ACTION_PROACTIVE_MESSAGE -> {
                 Log.d(ProactiveMessageService.TAG, "Starting ProactiveMessageTriggerService...")
                 val serviceIntent = Intent(context, ProactiveMessageTriggerService::class.java)
+                // 2.4.7 E2：extras 原样转发——补偿/重选重试计数与触发源标记都挂在闹钟 intent 上，
+                // 旧实现构造裸 intent 会把重试标记全部丢掉（重试被当成全新触发，计数永远归零）。
+                intent.extras?.let { serviceIntent.putExtras(it) }
                 context.startForegroundService(serviceIntent)
             }
             Intent.ACTION_BOOT_COMPLETED -> {
@@ -426,6 +429,71 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         // 与设备事件区分开，避免被 buildSystemPrompt 误判为"用户手机动向（设备事件触发）"
         const val EXTRA_WORKFLOW_WAKEUP = "workflow_wakeup"
 
+        // ---- 2.4.7 E2（L2·晨信双缺口·补偿重试）----
+        /** 网络类失败已补偿重试次数（E2-A，上限 [MAX_COMPENSATION_RETRY]）。 */
+        const val EXTRA_COMPENSATION_RETRY = "compensation_retry_count"
+        /** claim 失败已重选重试次数（E2-B，上限 [MAX_CLAIM_RETRY]）。 */
+        const val EXTRA_CLAIM_RETRY = "claim_retry_count"
+        // 独立 requestCode：PendingIntent 身份 = requestCode + filterEquals（extras 不参与比较），
+        // 与定时链 10001 共用会互相 FLAG_UPDATE_CURRENT 覆盖、cancel 误伤。
+        private const val REQUEST_CODE_COMPENSATION = 10002
+        private const val REQUEST_CODE_CLAIM_RETRY = 10003
+        private const val MAX_COMPENSATION_RETRY = 2
+        private const val MAX_CLAIM_RETRY = 2
+
+        /**
+         * 补偿/重选重试闹钟：AlarmManager.setAndAllowWhileIdle（不要求 exact-alarm 权限，
+         * doze 下也能唤醒，分钟级误差可接受）→ 广播给 ProactiveMessageReceiver（已改为转发 extras）
+         * → startForegroundService 重走全流程。重试 intent 一律带 EXTRA_FORCE_TRIGGER=true：
+         * last_triggered_time 首次触发时已写入，不带 force 会被 min-interval 去重吞掉。
+         */
+        private fun scheduleRetryAlarm(
+            context: Context,
+            requestCode: Int,
+            delayMs: Long,
+            isFromWorkflow: Boolean,
+            deviceEventContext: String?,
+            compensationCount: Int,
+            claimRetryCount: Int,
+        ) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, ProactiveMessageReceiver::class.java).apply {
+                action = ProactiveMessageService.ACTION_PROACTIVE_MESSAGE
+                putExtra(EXTRA_FORCE_TRIGGER, true)
+                if (isFromWorkflow) putExtra(EXTRA_WORKFLOW_WAKEUP, true)
+                if (deviceEventContext != null) putExtra(EXTRA_DEVICE_EVENT_CONTEXT, deviceEventContext)
+                putExtra(EXTRA_COMPENSATION_RETRY, compensationCount)
+                putExtra(EXTRA_CLAIM_RETRY, claimRetryCount)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + delayMs,
+                pendingIntent
+            )
+        }
+
+        /**
+         * E2-A 网络类失败判定：IOException 家族（UnknownHost/SocketTimeout/Connect/SSL 均为其子类），
+         * 沿 cause 链走 ≤6 层防环。这类失败 = 晨信时段瞬时断网（doze 断流/基站切换），值得补偿；
+         * 业务/解析/配置错误重试也不会好，不浪费次数。
+         */
+        private fun isNetworkClassError(e: Throwable?): Boolean {
+            var cur = e
+            var depth = 0
+            while (cur != null && depth < 6) {
+                if (cur is java.io.IOException) return true
+                cur = cur.cause
+                depth++
+            }
+            return false
+        }
+
         // 保护 last_triggered_time 的 check-then-act 竞态（防止 AlarmManager 与 WorkManager
         // 前后脚触发导致"最小间隔"被砍半）。纯同步 SharedPreferences 读写，无挂起点，用对象锁即可。
         private val prefsLock = Any()
@@ -460,11 +528,14 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         // 激进模式设备事件上下文（由 DeviceEventAiTriggerService 传入）
         val deviceEventContext = intent?.getStringExtra(EXTRA_DEVICE_EVENT_CONTEXT)
         val isFromDeviceEvent = deviceEventContext != null && !isFromWorkflow
+        // 2.4.7 E2：补偿/重选重试计数（重试 intent 携带；常规触发默认 0）
+        val compensationRetryCount = intent?.getIntExtra(EXTRA_COMPENSATION_RETRY, 0) ?: 0
+        val claimRetryCount = intent?.getIntExtra(EXTRA_CLAIM_RETRY, 0) ?: 0
         // 2.4.2 全链路埋点 → 2.4.6.2 RD1 文件化：主动消息链路断点定位用。
         // logcat 过滤 adb logcat -s ProactiveTrace；文件 filesDir/proactive_trace.log，设置页可导出
         ProactiveTrace.log(
             this,
-            "entry source=${if (isFromWorkflow) "workflow" else if (isFromDeviceEvent) "device_event" else "scheduled_or_gateway"} force=$isForceTrigger"
+            "entry source=${if (isFromWorkflow) "workflow" else if (isFromDeviceEvent) "device_event" else "scheduled_or_gateway"} force=$isForceTrigger compRetry=$compensationRetryCount claimRetry=$claimRetryCount"
         )
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else if (isFromWorkflow) " from workflow wakeup" else " from gateway poll"}, will skip min interval check")
@@ -487,6 +558,33 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
         CoroutineScope(Dispatchers.IO).launch {
             var conversationId: kotlin.uuid.Uuid? = null
+            // 2.4.7 E2/E3 共用：补偿重试（网络类失败 E2-A 与静默看门狗 E3 同一机制）。
+            // 设备事件源除外——15-30 分钟后设备上下文早已过时，补偿出去反而是没头没尾的消息，宁可放弃。
+            // 工作流唤醒源保留其唤醒卡上下文（同样挂在 EXTRA_DEVICE_EVENT_CONTEXT 里）。
+            fun scheduleCompensationIfEligible(reason: String) {
+                if (isFromDeviceEvent) {
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "comp-retry($reason): skipped, device_event source (context would be stale)")
+                    return
+                }
+                if (compensationRetryCount >= MAX_COMPENSATION_RETRY) {
+                    ProactiveTrace.log(this@ProactiveMessageTriggerService, "comp-retry($reason): exhausted ($compensationRetryCount/$MAX_COMPENSATION_RETRY), giving up")
+                    return
+                }
+                val delayMs = TimeUnit.MINUTES.toMillis(15) + Random.nextLong(TimeUnit.MINUTES.toMillis(16)) // 15-30min
+                scheduleRetryAlarm(
+                    context = this@ProactiveMessageTriggerService,
+                    requestCode = REQUEST_CODE_COMPENSATION,
+                    delayMs = delayMs,
+                    isFromWorkflow = isFromWorkflow,
+                    deviceEventContext = if (isFromWorkflow) deviceEventContext else null,
+                    compensationCount = compensationRetryCount + 1,
+                    claimRetryCount = claimRetryCount,
+                )
+                ProactiveTrace.log(
+                    this@ProactiveMessageTriggerService,
+                    "comp-retry($reason): scheduled in ${delayMs / 60000}min (attempt ${compensationRetryCount + 1}/$MAX_COMPENSATION_RETRY)"
+                )
+            }
             try {
                 val settings = settingsStore.settingsFlow.first()
                 val proactiveSetting = settings.proactiveMessageSetting
@@ -580,6 +678,26 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         "Skip proactive trigger: session $conversationId already generating " +
                             "(normal chat or another proactive trigger in progress)"
                     )
+                    // 2.4.7 E2-B（晨信双缺口之 claim 缺口）：旧行为直接丢弃本次晨信（9-20 案：会话被
+                    // 正常聊天/树影占用，晨信无声消失，直到下一次自然闹钟才有人发现）。现在：延迟 30-60s
+                    // 重选重试（≤2 次）。重试走全流程重跑 = 天然「重选」（会话已换则拿最新 recent 会话）；
+                    // 30-60s 足够短，设备事件/工作流上下文不会过时，故对所有触发源一视同仁。
+                    // 重试闹钟独立 requestCode，与定时链互不干扰；force 标记绕过 min-interval 去重。
+                    if (claimRetryCount < MAX_CLAIM_RETRY) {
+                        val delayMs = 30_000L + Random.nextLong(30_001L) // 30-60s，错开占用方
+                        scheduleRetryAlarm(
+                            context = this@ProactiveMessageTriggerService,
+                            requestCode = REQUEST_CODE_CLAIM_RETRY,
+                            delayMs = delayMs,
+                            isFromWorkflow = isFromWorkflow,
+                            deviceEventContext = deviceEventContext,
+                            compensationCount = compensationRetryCount,
+                            claimRetryCount = claimRetryCount + 1,
+                        )
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "claim-retry: scheduled in ${delayMs / 1000}s (attempt ${claimRetryCount + 1}/$MAX_CLAIM_RETRY)")
+                    } else if (claimRetryCount > 0) {
+                        ProactiveTrace.log(this@ProactiveMessageTriggerService, "claim-retry: exhausted ($claimRetryCount/$MAX_CLAIM_RETRY), giving up this round")
+                    }
                     // 必须走到 finally 块的"安排下一次触发"逻辑，不能绕过定时链收尾。
                     // 用 stopSelf + return@launch 退出主流程，finally 会正常执行（scheduleNext 已用 NonCancellable 保护）。
                     stopSelf()
@@ -901,6 +1019,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     } catch (cleanupErr: Exception) {
                         Log.w(ProactiveMessageService.TAG, "Failed to cleanup error messages", cleanupErr)
                     }
+                }
+                // 2.4.7 E2-A（晨信双缺口之网络缺口）：旧行为错误后静默丢弃本次晨信（9-26 案：凌晨
+                // doze 断网，IOException 直接吞掉本轮，trace 里只剩 scheduleNext，一夜丢几条晨信无人知晓）。
+                // 现在：网络类失败（IOException 家族，cause 链判定）15-30min 后补偿重试（≤2 次）；
+                // 业务/解析/配置错误不重试（重试也不会好）。trace 可验证：comp-retry(net:Xxx) scheduled/exhausted/skipped。
+                if (isNetworkClassError(e)) {
+                    scheduleCompensationIfEligible("net:${e::class.simpleName}")
                 }
             } finally {
                 // 确保无论成功/失败/取消都安排下一次，避免一次 API 错误或用户打断永久中断定时链。
