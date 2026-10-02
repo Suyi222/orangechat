@@ -48,6 +48,7 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
+import me.rerere.ai.util.RequestSizeEstimator
 import me.rerere.ai.util.SpecialTokenFilter
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
@@ -99,7 +100,12 @@ class ChatCompletionsAPI(
         // 7-8MB 请求体 = 又一次 13-15MB 级 char[] 大分配（release 包 proguard 无 Log 剥离规则，照跑）。
         // 改为轻量摘要（模型/消息数/工具数），对请求体零引用、零额外序列化；发送路径不动。
         // 完整请求体取证走开发者页「请求体落盘」开关（AILogging 按需导出，密钥脱敏）。
-        Log.i(TAG, "generateText: model=${params.model.modelId} messages=${messages.size} tools=${params.tools.size}")
+        // 2.4.7 D3 体积守卫：发送前廉价估算（零大分配），>4MB 打 warn；只告警不截断（截断=改请求语义，铁律禁动）。
+        val estBodyBytes = RequestSizeEstimator.estimate(messages, params)
+        Log.i(TAG, "generateText: model=${params.model.modelId} messages=${messages.size} tools=${params.tools.size} estBody≈${RequestSizeEstimator.format(estBodyBytes)}")
+        if (estBodyBytes > RequestSizeEstimator.WARN_THRESHOLD_BYTES) {
+            Log.w(TAG, "generateText: oversized request body ≈${RequestSizeEstimator.format(estBodyBytes)} > 4MB 守卫阈值（不截断）——OOM 高危，建议缩小上下文窗口")
+        }
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
@@ -242,8 +248,12 @@ class ChatCompletionsAPI(
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
-        // 2.4.7 D1：同 generateText——整请求体日志序列化删除，只留轻量摘要（详见 generateText 处注释）。
-        Log.i(TAG, "streamText: model=${params.model.modelId} messages=${messages.size} tools=${params.tools.size}")
+        // 2.4.7 D1：同 generateText——整请求体日志序列化删除，只留轻量摘要；D3 估算 + >4MB warn 同口径。
+        val estBodyBytes = RequestSizeEstimator.estimate(messages, params)
+        Log.i(TAG, "streamText: model=${params.model.modelId} messages=${messages.size} tools=${params.tools.size} estBody≈${RequestSizeEstimator.format(estBodyBytes)}")
+        if (estBodyBytes > RequestSizeEstimator.WARN_THRESHOLD_BYTES) {
+            Log.w(TAG, "streamText: oversized request body ≈${RequestSizeEstimator.format(estBodyBytes)} > 4MB 守卫阈值（不截断）——OOM 高危，建议缩小上下文窗口")
+        }
 
         // just for debugging response body
         // println(client.newCall(request).await().body?.string())

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.rerere.ai.util.RequestSizeEstimator
 import me.rerere.rikkahub.data.ai.AILogging
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
@@ -151,6 +152,9 @@ fun LoggingPaging(vm: DeveloperVM) {
                                     append(" · 驻留 ~")
                                     append(log.estimatedBytes / 1024)
                                     append("KB")
+                                    // 2.4.7 D3 体积守卫：本轮请求体估算（与落盘 req_*.json 对账 = 水位取证）
+                                    append(" · 请求体约 ")
+                                    append(RequestSizeEstimator.format(log.estimatedRequestBytes))
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

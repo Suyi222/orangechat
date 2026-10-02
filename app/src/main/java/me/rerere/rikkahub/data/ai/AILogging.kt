@@ -26,6 +26,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.RequestSizeEstimator
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import java.io.File
@@ -72,6 +73,9 @@ sealed class AILogging {
         val providerBaseUrl: String?,
         val stream: Boolean,
         val messageCount: Int,
+        // 2.4.7 D3 体积守卫：发送前对请求体的廉价估算（字节，口径见 RequestSizeEstimator）。
+        // 与落盘 req_*.json 实际大小对账 = 水位取证（第三刀「图片减负」是否立项的证据）。
+        val estimatedRequestBytes: Long,
         /** 末尾若干条消息的摘要（不是原对象）。 */
         val tailDigests: List<MessageDigest>,
         override val estimatedBytes: Int,
@@ -140,6 +144,14 @@ class AILoggingManager(private val context: Context) {
             ioScope.launch { dumpFullRequest(params, messages, providerSetting, stream) }
         }
         val slim = slimOf(params, messages, providerSetting, stream)
+        // 2.4.7 D3 体积守卫：>4MB 只 log warn 不截断（截断=改请求语义，范围铁律禁动）。
+        if (slim.estimatedRequestBytes > RequestSizeEstimator.WARN_THRESHOLD_BYTES) {
+            Log.w(
+                TAG,
+                "oversized request body ≈${RequestSizeEstimator.format(slim.estimatedRequestBytes)} > 4MB threshold " +
+                    "(model=${slim.modelId}, messages=${slim.messageCount}, tools=${slim.toolNames.size})"
+            )
+        }
         var next = logs.value + slim
         if (next.size > MAX_LOGS) {
             next = next.drop(next.size - MAX_LOGS)
@@ -186,6 +198,9 @@ class AILoggingManager(private val context: Context) {
             providerBaseUrl = providerBaseUrl,
             stream = stream,
             messageCount = messages.size,
+            estimatedRequestBytes = runCatching {
+                RequestSizeEstimator.estimate(messages, params)
+            }.getOrDefault(0L),
             tailDigests = tailDigests,
             estimatedBytes = 0, // 下面按实际持有字符串重算
         )
