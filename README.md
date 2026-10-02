@@ -9,7 +9,7 @@
 <p>基于 <a href="https://github.com/rikkahub/rikkahub">RikkaHub</a> 深度定制的 Android AI 客户端<br/>在原生聊天体验之上，构建了完整的插件生态与智能生活服务</p>
 
 <p>
-  <img src="https://img.shields.io/badge/%E9%9A%99%E5%85%89-2.4.6.4%20%28vc171%29-3d7a3d" alt="隙光 2.4.6.4" />
+  <img src="https://img.shields.io/badge/%E9%9A%99%E5%85%89-2.4.7%20%28vc172%29-3d7a3d" alt="隙光 2.4.7" />
   <img src="https://img.shields.io/badge/Kotlin-100%25-7F52FF" alt="Kotlin" />
   <img src="https://img.shields.io/badge/Android-26%2B-green" alt="Android" />
   <img src="https://img.shields.io/badge/License-AGPL%20v3-red" alt="License" />
@@ -31,7 +31,8 @@ RikkaHub（原作者 RE 开源）
 
 - **尊重前人**：原作者 RE、橘瓣开发者 sue1231513 的代码、注释、署名全部原样保留（AGPL v3 开源协议）
 - **新增内容**：小园丁自己加的功能与文件，用「隙光」命名
-- **2.4.6.4 OOM 根治·第一刀（当前版本 · versionCode 171）**：🔪 砍掉 B0 取证定案的 OOM 真凶——开发者请求日志每生成一次就囤一份「整会话副本」（5093 条会话 ≈ +29MB/次，约 17 次生成顶满 512MB 堆）：日志改**瘦身摘要**（参数元数据 + 工具名 + 末尾消息摘要，附件只留类型/字节数/采样hash，不再持有 messages 引用）· 淘汰改**条数(32) + 字节预算(≤16MB) 双保险** · 完整请求体改**开发者页按需落盘**（`ai_request_dump/`，密钥脱敏，网关取证 D1 基建就位）· 开发者页日志卡片从空壳变为摘要展示（驻留 KB 可视化）
+- **2.4.7 OOM 根治·第二刀 ＋ 安心包（当前版本 · versionCode 172 · 国庆批）**：🔪 第二刀四件套——D1 删 release 日志重复整请求体序列化 · D2 请求体改**流式序列化**（StreamingJsonRequestBody 两段计数保 Content-Length，线上字节逐字节不变，JVM 字节 diff 单测自证，13-15MB 连续 char[] 大块从根消灭）· D3 **体积守卫**（精确 UTF-8 估算，开发者页「请求体约 X MB」，>4MB warn 不截断）· D4 请求体落盘改流式（16MB pretty String 消灭）· 🛡️ 安心包——E1 **全角特殊 token 清污 v2**（全角竖线/尖括号混搭不再穿透，落库兜底+存量重扫 schema=2，半角行为与解析层逐字一致单测对拍，SpecialTokenFilter 零改动）· E2 **晨信双缺口补偿**（网络类失败 15-30min 重试≤2 / claim 失败 30-60s 重选重试≤2，Receiver 转发 extras，独立 requestCode，全程 trace）· E3 **静默看门狗**（90s 零内容增量掐掉网关黑洞流，keep-alive 空帧不续命，claim 即时释放+补偿重试，43min 静默不再）
+- **2.4.6.4 OOM 根治·第一刀（versionCode 171）**：🔪 砍掉 B0 取证定案的 OOM 真凶——开发者请求日志每生成一次就囤一份「整会话副本」（5093 条会话 ≈ +29MB/次，约 17 次生成顶满 512MB 堆）：日志改**瘦身摘要**（参数元数据 + 工具名 + 末尾消息摘要，附件只留类型/字节数/采样hash，不再持有 messages 引用）· 淘汰改**条数(32) + 字节预算(≤16MB) 双保险** · 完整请求体改**开发者页按需落盘**（`ai_request_dump/`，密钥脱敏，网关取证 D1 基建就位）· 开发者页日志卡片从空壳变为摘要展示（驻留 KB 可视化）
 - **2.4.6.3 OOM 急救包（versionCode 170）**：🌲 树影下「记成功不落盘」根治（取服务不再永久缓存 null / 记账与开关解耦 / 写后核验才算成功 / 补成功日志）· 📉 主动消息流式落库节流（每分片整会话重编码 → ≥1.5s 一次）· 🧠 onTrimMemory + 图片内存缓存上限 25%→15%（保活欠的另一半）· ⚠️ 热窗口/onTrimMemory 之外的 OOM 根治（B4）仍在 beta.2
 - **2.4.6.2 返修包（versionCode 169）**：🌳 树影下罢工根治（总结书签改按会话存——大窗口一次成功总结不再锁死所有窗口；静默跳过也写日志）· 🔁 总结退避缺陷修复（内容拒收缩窗重试 60→30→12 / 连续失败≥5 熔断显式暂停 / 时间线提示按日重发）· 🕰️ 最后消息时间两段式尾查询 + update_at 回退（一行坏数据不再毒全局）· 🧹 特殊 token 五层清洗（源头 delta + 跨 delta 尾巴暂扣 + 围栏修正 + 渲染兜底 + 存量清污一次性扫库）· 📋 后台任务日志 proactive_trace.log（主动消息/工作流 8 段链路每段一行，设置页两份日志统一导出，晨信案跑一夜即可定位）
 - **2.4.6 止血 hotfix（versionCode 168）**：🧹 模型特殊 token 清洗（跨 chunk 半截 + 代码块保护 + 落库兜底）·  保活前台服务改 specialUse（躲开 dataSync 6h/24h 配额处决，9.11 断档真凶）+ 超时优雅退出 · 💨 两大内存热点轻量化（Recent Chats 零节点加载 / 最后消息时间 SQL 尾查询，去掉双重全量加载）· ️ 总结失败指数退避 + 时间线可见 + 日志导出入口 · 🧩 插件调用 miss 自愈 + 加载失败红点
@@ -40,7 +41,7 @@ RikkaHub（原作者 RE 开源）
 - **2.4.1 新功能**：🧩 插件环境 v2 —— Bridge v2 原生通道（无 URL 长度上限，异常自动回落）· 📋 JS console 进 logcat + debug 包 chrome://inspect · 🖥️ 渲染兜底（softwareRender）· 🚀 新 Bridge API（getEnvInfo / 同步存储 / showToast / Bridge.on 事件）· 📜 minEnvVersion 环境契约（现有插件零改动）
 - **2.4.0 新功能**：🌲 树影下 2.0（删改/读往日/自动记录开关组）· 🧠 tree_heart 活化（开场浮现/自动落账/自动见证）· 🔍 历史检索修复 + search_chat_history · 👻 工作流一次性模式 + 暴露开关 · 🍊 修 Coil 崩溃
 - **2.3.0 新功能**：🌲 树影下状态系统 · 🕐 随机时间触发器 · 🛡️ 后台工具总开关 · 🔔 工作流主动唤醒卡
-- 📝 更新说明（新→旧）：[2.4.6.4](docs/RELEASE-2026-09-26-xiguang-2.4.6.4.md) ｜ [2.4.6.3](docs/RELEASE-2026-09-20-xiguang-2.4.6.3.md) ｜ [2.4.6.2](docs/RELEASE-2026-09-17-xiguang-2.4.6.2.md) ｜ [2.4.6](docs/RELEASE-2026-09-16-xiguang-2.4.6.md) ｜ [2.4.5](docs/RELEASE-2026-08-30-xiguang-2.4.5.md) ｜ [2.4.4](docs/RELEASE-2026-08-29-xiguang-2.4.4.md) ｜ [2.4.3](docs/RELEASE-2026-08-29-xiguang-2.4.3.md) ｜ [2.4.2](docs/RELEASE-2026-08-29-xiguang-2.4.2.md) ｜ [2.4.1](docs/RELEASE-2026-08-19-xiguang-2.4.1.md) ｜ [2.4.0](docs/RELEASE-2026-08-12-xiguang-2.4.0.md) ｜ [2.3.1](docs/RELEASE-2026-08-08-xiguang-2.3.1.md) ｜ [2.3.0](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)
+- 📝 更新说明（新→旧）：[2.4.7](docs/RELEASE-2026-10-02-xiguang-2.4.7.md) ｜ [2.4.6.4](docs/RELEASE-2026-09-26-xiguang-2.4.6.4.md) ｜ [2.4.6.3](docs/RELEASE-2026-09-20-xiguang-2.4.6.3.md) ｜ [2.4.6.2](docs/RELEASE-2026-09-17-xiguang-2.4.6.2.md) ｜ [2.4.6](docs/RELEASE-2026-09-16-xiguang-2.4.6.md) ｜ [2.4.5](docs/RELEASE-2026-08-30-xiguang-2.4.5.md) ｜ [2.4.4](docs/RELEASE-2026-08-29-xiguang-2.4.4.md) ｜ [2.4.3](docs/RELEASE-2026-08-29-xiguang-2.4.3.md) ｜ [2.4.2](docs/RELEASE-2026-08-29-xiguang-2.4.2.md) ｜ [2.4.1](docs/RELEASE-2026-08-19-xiguang-2.4.1.md) ｜ [2.4.0](docs/RELEASE-2026-08-12-xiguang-2.4.0.md) ｜ [2.3.1](docs/RELEASE-2026-08-08-xiguang-2.3.1.md) ｜ [2.3.0](docs/RELEASE-2026-08-04-xiguang-2.3.0.md)
 - 🛠️ 实现文档：[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
 - 🔀 开发分支：`feature/workflow-widget-v2`
 
